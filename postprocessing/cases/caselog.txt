@@ -129,6 +129,11 @@ Case 66:  Changed naming convention for output files, handling an error in the t
 
 Case 67:  Fixed an indexing issue that appeared with failures on the supercomputer
 
+Case 68: Catching all errors, not just failure to run errors
+
+Case 69: Adding a constraint of CL=1.5 @ alpha=10deg to the 36
+
+
 Case 99: Only quick run changes
 Case 98: Changed the output to match
 Case 97: Updated most things but not the primary L/D objectives

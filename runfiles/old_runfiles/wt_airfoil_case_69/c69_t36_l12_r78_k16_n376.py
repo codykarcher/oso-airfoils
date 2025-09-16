@@ -222,6 +222,7 @@ labels += [
         'con_tau',
         'con_concave',
         'con_lower_flips',
+        'con_10deg'
     ]
 
 

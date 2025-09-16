@@ -1,10 +1,12 @@
 import numpy as np
 from kulfan import Kulfan, units
 import copy
+import math
 
 import pathlib
 path_to_here = pathlib.Path(__file__).parent.resolve()
 from xfoil_wrapper_noprint import run as run_xfoil
+
 
 def airfoil_fitness(x):
     for i in range(0,5):
@@ -102,7 +104,7 @@ def core_fitness_function(x):
         ler_con = [0.007, 0.008, 0.01, 0.025, 0.03, 0.04, 0.06, 0.08]
 
         N_reported    = 15
-        N_constraints = 16
+        N_constraints = 17
         N_points_moi  = 20
 
         constraint_base_penalty = 1e2
@@ -148,7 +150,7 @@ def core_fitness_function(x):
         lower_surface_curvature_weighting   = constraint_base_penalty
         te_cone_violation_weighting         = 1000*constraint_base_penalty
         flareout_weighting                  = 100*constraint_base_penalty
-        CL_36_weighting                     = constraint_base_penalty
+        CL_36_weighting                     = 100*constraint_base_penalty
         
         rough_constraint_penalty  = 10*constraint_base_penalty
         # ----------------------
@@ -601,19 +603,21 @@ def core_fitness_function(x):
         # ----------------------
         # Ensure 36% airfoil has sufficient CL for rough case
         # ----------------------
-        if tau == '36':
-            if max(alpha_rough)<target_alpha_36:
-                #  Higher alphas did not converge
-                return [pid, np.inf, False, -60] + [0]*N_reported + [0]*N_constraints
+        cl_at_10_degrees_rough = 0.0
+        # if tau == '36':
+        if max(alpha_rough)<target_alpha_36:
+            #  Higher alphas did not converge
+            return [pid, np.inf, False, -60] + [0]*N_reported + [0]*N_constraints
 
-            cl_at_10_degrees_rough = np.interp(target_alpha_36, 
-                                               np.array(alpha_rough)[0:positive_peak_index_rough], 
-                                               np.array(cl_rough)[0:positive_peak_index_rough] )
+        cl_at_10_degrees_rough = np.interp(target_alpha_36, 
+                                           np.array(alpha_rough)[0:positive_peak_index_rough], 
+                                           np.array(cl_rough)[0:positive_peak_index_rough] )
 
-            if cl_at_10_degrees_rough <= target_cl_36:
-                obj += CL_36_weighting * abs(target_cl_36-cl_at_10_degrees_rough)
-                # Dont return constraint because it is only the 36
+        if cl_at_10_degrees_rough <= target_cl_36:
+            obj += CL_36_weighting * abs(target_cl_36-cl_at_10_degrees_rough)
 
+        cn = cl_at_10_degrees_rough/10 + math.floor(CL_36_weighting * abs(target_cl_36-cl_at_10_degrees_rough)*1000)
+        cons.append(cn)
         # ----------------------
         # return
         # ----------------------
@@ -734,6 +738,7 @@ if __name__ == '__main__':
         'con_concave',
         'con_lower_flips',
         'con_flare_out',
+        'con_10deg'
     ]
 
     for i,ind in enumerate(airfoil_seeds):

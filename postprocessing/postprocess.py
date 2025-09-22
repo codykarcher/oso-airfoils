@@ -2876,7 +2876,7 @@ if rank == 0:
             'Riso-P':{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[4],'path':path_to_oso+'/historical_airfoils/riso-p'}, 
             'S25'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[5],'path':path_to_oso+'/historical_airfoils/s'}, 
             'S40'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[6],'path':path_to_oso+'/historical_airfoils/s'},
-            'OSO'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': 'k'      ,'path':path_to_oso+'/released_designs/active'}, 
+            'OSO'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': 'k'      ,'path':path_to_oso+'/released_designs/OSO_2025_WT2'}, 
         }
 
         comp_afls = comparisonAirfoils[tau]
@@ -2892,7 +2892,7 @@ if rank == 0:
             else: #OSO airfoils, force data collection
                 # append_rfoil_data(rfoil_comparison, comp_afls, kwd, ix)
                 path_to_data = rfoil_comparison[kwd]['path']+'/rfoil_data'
-                files = natsort.natsorted([f for f in os.listdir(path_to_data) if '.dat' in f and '_'+tau+'_' in f.lower()], alg=natsort.ns.IGNORECASE)
+                files = natsort.natsorted([f for f in os.listdir(path_to_data) if '.dat' in f and '_T'+tau+'_' in f], alg=natsort.ns.IGNORECASE)
                 for f in files:
                     if 'DragOn' in f:
                         if 'clean' in f:

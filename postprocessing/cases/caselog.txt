@@ -133,6 +133,8 @@ Case 68: Catching all errors, not just failure to run errors
 
 Case 69: Adding a constraint of CL=1.5 @ alpha=10deg to the 36
 
+Case 70: Ran case 69 on the grid, however the case 69 constraint was incorrect.  Did not work well.
+
 
 Case 99: Only quick run changes
 Case 98: Changed the output to match

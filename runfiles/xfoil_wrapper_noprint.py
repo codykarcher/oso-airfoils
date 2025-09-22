@@ -53,6 +53,7 @@ def run(mode,
     elif 'ahsieh' in str(path_to_here):
         tfpre = '/gpfs/ahsieh/tempfiles/t_'
         # tfpre = '/pscratch/ahsieh/tempfiles/tmp_'
+        # tfpre = '/tscratch/ahsieh/tempfiles/tmp_'
     elif 'karch' in str(path_to_here).lower():
         tfpre = 't_'
     else:

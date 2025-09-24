@@ -40,7 +40,8 @@ def run(mode,
         stdoutFile     = None,
         TE_gap = 0.0,
         timelimit = 10,
-        max_iter=100):
+        max_iter=100,
+        file_system = None):
 
     try:
         iter(val)
@@ -51,8 +52,13 @@ def run(mode,
     if 'dcmania' in str(path_to_here):
         tfpre = '/gpfs/dcmania/tempfiles/t_'
     elif 'ahsieh' in str(path_to_here):
-        tfpre = '/gpfs/ahsieh/tempfiles/t_'
-        # tfpre = '/pscratch/ahsieh/tempfiles/tmp_'
+        if file_system is None or file_system == 0:
+            # Default Behavior
+            tfpre = '/gpfs/ahsieh/tempfiles/t_'
+        elif file_system == 1:
+            tfpre = '/pscratch/ahsieh/tempfiles/tmp_'
+        else:
+            tfpre = '/tscratch/ahsieh/tempfiles/tmp_'
     elif 'karch' in str(path_to_here).lower():
         tfpre = 't_'
     else:

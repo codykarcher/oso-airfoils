@@ -2502,6 +2502,10 @@ def read_rfoil_file(f):
 # ==================================================================================================================================================================
 
 existing_airfoil_dictionary = {
+'ffa-w1-152':
+{'upperCoefficients':[0.2033770791334374, 0.35541165665438224, 0.20161728732625034, 0.4986687465914038, 0.14601673098762485, 0.3293694467192241, 0.17479075144994088, 0.09638704435778374],
+'lowerCoefficients':[-0.1375608416772856, -0.03415641254585143, -0.1735476949572231, 0.020277437870460185, -0.17847829862565853, -0.028881156347881454, -0.1014790894175074, 0.021824969234881652],
+'TE_gap':0.00196},
 'ffa-w2-152': 
 {'upperCoefficients': [0.17046706, 0.33438668, 0.15476145, 0.49129222, 0.17236828, 0.2962321, 0.18079263, 0.0893167],
 'lowerCoefficients': [-0.14403581, -0.06194855, -0.19882893, 0.01263156, -0.21452513, -0.02732511, -0.13605042, 0.01492792],
@@ -2700,19 +2704,27 @@ def generateAirfoil(aflString):
 #             rfoil_AFL['rough'] = opd
 
 def append_rfoil_data(rfoil_comparison, comp_afls, kwd, ix):
+    found_location = False
     path_to_data = rfoil_comparison[kwd]['path']+'/rfoil_data'
     files = natsort.natsorted([f for f in os.listdir(path_to_data) if '.dat' in f and comp_afls[ix] in f.lower()], alg=natsort.ns.IGNORECASE)
     for f in files:
         if 'DragOn' in f:
             if 'clean' in f:
                 rfoil_comparison[kwd]['clean']['drag_on'] = read_rfoil_file(path_to_data + '/' + f)[0]
+                found_location = True
             elif 'rough' in f:
                 rfoil_comparison[kwd]['rough']['drag_on'] = read_rfoil_file(path_to_data + '/' + f)[0]
+                found_location = True
         else:
             if 'clean' in f:
                 rfoil_comparison[kwd]['clean']['drag_off'] = read_rfoil_file(path_to_data + '/' + f)[0]
+                found_location = True
             elif 'rough' in f:
                 rfoil_comparison[kwd]['rough']['drag_off'] = read_rfoil_file(path_to_data + '/' + f)[0]
+                found_location = True
+    
+    if not found_location:
+        print('Not found:  ',comp_afls[ix])
 
 # ==================================================================================================================================================================
 # ==================================================================================================================================================================
@@ -2757,7 +2769,7 @@ design_matrix = [
 ]
 
 comparisonAirfoils = {
-    '15' : [  None         , 'ffa-w2-152', 'riso-a-15', 'riso-b-15', 'riso-p-15', 's832', 's826' ],
+    '15' : [  None         , 'ffa-w1-152', 'riso-a-15', 'riso-b-15', 'riso-p-15', 's832', 's826' ],
     '18' : [ 'du_96-w-180' , 'ffa-w1-182', 'riso-a-18', 'riso-b-17', 'riso-p-18', 's831', 's825' ],
     '21' : [ 'du_93-w-210' , 'ffa-w3-211', 'riso-a-21', 'riso-b-20', 'riso-p-20', 's830',  None  ],
     '24' : [ 'du_91-w2-250', 'ffa-w3-241', 'riso-a-24', 'riso-b-23', 'riso-p-23', 's818', 's814' ],
@@ -2870,17 +2882,21 @@ if rank == 0:
 
         rfoil_comparison = {
             'DU'    :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[0],'path':path_to_oso+'/historical_airfoils/du'}, 
-            'FFA'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[1],'path':path_to_oso+'/historical_airfoils/ffa/original'}, 
+            'FFA'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[1],'path':path_to_oso+'/historical_airfoils/ffa/fitted'}, 
             'Riso-A':{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[2],'path':path_to_oso+'/historical_airfoils/riso-a'}, 
             'Riso-B':{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[3],'path':path_to_oso+'/historical_airfoils/riso-b'}, 
             'Riso-P':{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[4],'path':path_to_oso+'/historical_airfoils/riso-p'}, 
             'S25'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[5],'path':path_to_oso+'/historical_airfoils/s'}, 
             'S40'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': colors[6],'path':path_to_oso+'/historical_airfoils/s'},
-            'OSO'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': 'k'      ,'path':path_to_oso+'/released_designs/OSO_2025_WT2'}, 
+            # 'OSO'   :{ 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': 'k'      ,'path':path_to_oso+'/released_designs/OSO_2025_WT2'}, 
         }
 
         comp_afls = comparisonAirfoils[tau]
-        kwds = ['DU', 'FFA', 'Riso-A', 'Riso-B', 'Riso-P', 'S25', 'S40', 'OSO']
+        kwds = ['DU', 'FFA', 'Riso-A', 'Riso-B', 'Riso-P', 'S25', 'S40']#, 'OSO']
+
+        if 'released_designs' in str(path_to_here):
+            rfoil_comparison['OSO'] = { 'clean':{ 'drag_on':{}, 'drag_off':{} }, 'rough':{ 'drag_on':{}, 'drag_off':{} } , 'color': 'k'      ,'path':path_to_oso+'/released_designs/OSO_2025_WT2'}
+            kwds += [ 'OSO' ]
 
         for ix, kwd in enumerate(kwds):
             if kwd != 'OSO':

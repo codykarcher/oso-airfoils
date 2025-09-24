@@ -27,7 +27,8 @@ def newGeneration(  fitnessFunction,
                     comm = None  ,
                     CL = None,
                     rLD = None,
-                    re = None):
+                    re = None,
+                    file_system = None):
 
     population = np.array(population)
     if len(population)%4!=0:
@@ -50,6 +51,7 @@ def newGeneration(  fitnessFunction,
                 ins['CL'] = CL
                 ins['rLD'] = rLD
                 ins['re'] = re
+                ins['file_system'] = file_system
                 result.append(fitnessFunction(ins))
 
         result = comm.gather(result, root=0)
@@ -192,6 +194,7 @@ def newGeneration(  fitnessFunction,
             ins['CL'] = CL
             ins['rLD'] = rLD
             ins['re'] = re
+            ins['file_system'] = file_system
             result.append(fitnessFunction(ins))
 
     result = comm.gather(result, root=0)

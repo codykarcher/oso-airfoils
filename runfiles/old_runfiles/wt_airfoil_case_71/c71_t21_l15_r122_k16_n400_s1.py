@@ -36,6 +36,12 @@ for fc in filecodes:
         rLD = float(fc[1:])
     if 'e' in fc:
         re = float(fc[1:]) * 1e6
+    if 's' in fc:
+        possible = int(fc[1:])
+        if possible in [0,1,2,3]:
+            file_system = possible
+        else:
+            raise ValueError('filesystem flag must be 0 (default), 1 (gpfs), 2 (pscratch), or 3 (tscratch)')
 
 from mpi4py import MPI
 comm = MPI.COMM_WORLD
@@ -160,7 +166,7 @@ if rank == 0:
         pop[i] = afl.upperCoefficients.magnitude.tolist() + afl.lowerCoefficients.magnitude.tolist()
 
 pop = comm.bcast(pop, root=0)
-pop = newGeneration(airfoil_fitness, pop, normalizationVector = [1]*N_k, encodingTypes=[float]*N_k, lowerBounds=[-2.0]*N_k, upperBounds=[2.0]*N_k, tau=tau, initalize=True, comm=comm, CL = CL, rLD = rLD, re = re)
+pop = newGeneration(airfoil_fitness, pop, normalizationVector = [1]*N_k, encodingTypes=[float]*N_k, lowerBounds=[-2.0]*N_k, upperBounds=[2.0]*N_k, tau=tau, initalize=True, comm=comm, CL = CL, rLD = rLD, re = re, file_system = file_system)
 pop = comm.bcast(pop, root=0)
 
 if rank == 0:
@@ -230,7 +236,7 @@ for i in range(1,801):
     if rank == 0:
         cprint('Generation %d'%(i))
         pop_cache = copy.deepcopy(pop)
-    pop = newGeneration(airfoil_fitness, pop, normalizationVector = [1]*N_k, encodingTypes=[float]*N_k, lowerBounds=[-2.0]*N_k, upperBounds=[2.0]*N_k, tau=tau, initalize=False, comm=comm, CL = CL, rLD = rLD, re = re)
+    pop = newGeneration(airfoil_fitness, pop, normalizationVector = [1]*N_k, encodingTypes=[float]*N_k, lowerBounds=[-2.0]*N_k, upperBounds=[2.0]*N_k, tau=tau, initalize=False, comm=comm, CL = CL, rLD = rLD, re = re, file_system = file_system)
     pop = comm.bcast(pop, root=0)
     if rank == 0:
         if len(pop) == 0:

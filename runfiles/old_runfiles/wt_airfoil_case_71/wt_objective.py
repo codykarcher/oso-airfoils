@@ -26,6 +26,7 @@ def core_fitness_function(x):
     CL_in  = x['CL']
     rLD_in = x['rLD']
     Re_in  = x['re']
+    file_system = x['file_system']
 
     try:
         design_matrix = [
@@ -183,7 +184,7 @@ def core_fitness_function(x):
         # Re = design_matrix[[dmr[0] for dmr in design_matrix].index(tau)][3]
         
         fastrun_clean_success = False
-        res1 = run_xfoil('alfa', K_upper, K_lower, [0, 30,1], Re=Re, N_crit=9.0, xtp_u=1.0, xtp_l=1.0, TE_gap = te_gap, timelimit=15)
+        res1 = run_xfoil('alfa', K_upper, K_lower, [0, 30,1], Re=Re, N_crit=9.0, xtp_u=1.0, xtp_l=1.0, TE_gap = te_gap, timelimit=15, file_system = file_system)
         if res1 is None:
             raise RuntimeError("Xfoil failed")                
 
@@ -195,7 +196,7 @@ def core_fitness_function(x):
         # ----------------------
         # Run Rough Data
         # ----------------------  
-        res2 = run_xfoil('alfa', K_upper, K_lower, [0, 20,1], Re=Re, N_crit=3.0, xtp_u=0.05, xtp_l=0.05, TE_gap = te_gap, timelimit=15)
+        res2 = run_xfoil('alfa', K_upper, K_lower, [0, 20,1], Re=Re, N_crit=3.0, xtp_u=0.05, xtp_l=0.05, TE_gap = te_gap, timelimit=15, file_system = file_system)
         if res2 is None:
             raise RuntimeError("Xfoil failed")                
 

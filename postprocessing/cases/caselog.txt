@@ -139,6 +139,8 @@ Case 71: setting up a switch for different file systems
 
 Case 72: adding additional switches
 
+Case 73: Adding CM constraints to the airfoils
+
 
 Case 99: Only quick run changes
 Case 98: Changed the output to match

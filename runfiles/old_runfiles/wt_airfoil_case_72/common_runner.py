@@ -22,6 +22,7 @@ rLD = None
 re = None
 N_generations = 800
 N_retries = None
+file_system = None
 
 for fc in filecodes:
     if 'c' in fc:

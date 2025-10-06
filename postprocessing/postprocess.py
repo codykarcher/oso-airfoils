@@ -2787,6 +2787,7 @@ filecodes = filecode.split('_')
 
 CL = None
 re = None
+generation = None
 
 for fc in filecodes:
     if 'p' not in fc:
@@ -2795,7 +2796,7 @@ for fc in filecodes:
         if 't' in fc:
             # tau = float(fc[1:])/100
             tau = fc[1:]
-        if 'k' in fc or 'x' in fc:
+        if 'k' in fc:
             # N_k = int(fc[1:])
             N_k = int(fc[1:])
         if 'n' in fc:
@@ -2807,7 +2808,10 @@ for fc in filecodes:
         if 'e' in fc:
             re = float(fc[1:]) * 1e6
         if 'g' in fc:
-            generation = float(fc[1:])
+            if generation is not None:
+                generation = min([generation,int(fc[1:])])
+            else:
+                generation = int(fc[1:])
 
 if re is None:
     re = design_matrix[ [ dm[0] for dm in design_matrix ].index(int(tau)/100)][3]

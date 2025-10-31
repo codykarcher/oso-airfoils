@@ -66,11 +66,15 @@ for i in range(len(coords)):
         cm = polars[:,4]
 
         mypolar = Polar(Re=reynolds, alpha=aoa, cl=cl, cd=cd, cm=cm, compute_params=True, radians=False)
-        mypolar_extended = mypolar.extrapolate(1.5, cdmin=0.01)
+        mypolar_extended = mypolar.extrapolate(1.5, cdmin=0.001)
         aoa_extended = mypolar_extended.alpha
         cl_extended = mypolar_extended.cl
         cd_extended = mypolar_extended.cd
         cm_extended = mypolar_extended.cm
+
+        # Enforce minimum drag at extreme AOA
+        cd_extended[aoa_extended < -60] = np.maximum(cd_extended[aoa_extended < -60], 0.05)
+        cd_extended[aoa_extended > +60] = np.maximum(cd_extended[aoa_extended > +60], 0.05)
 
 
         airfoils[i]['polars'][j]['re_sets'][0]['cl']['grid'] = aoa_extended.tolist()
@@ -118,7 +122,7 @@ for i in range(len(airfoils)):
     axs[0,1].set_ylabel('Cd')
     axs[1,0].set_ylabel('Cm')
     axs[1,1].set_ylabel('Cl/Cd')
-    axs[1,1].set_ylim([-100, 200])
+    axs[1,1].set_ylim([-100, 250])
 
     for ax_row in axs:
         for ax in ax_row:
@@ -142,13 +146,17 @@ for i in range(len(airfoils)):
 for j in range(4):
     fig, axs = plt.subplots(2, 2, figsize=(7, 7 ), sharex=True)
 
-    config_label = airfoils[i]['polars'][j]['configuration']
+    config_label = airfoils[0]['polars'][j]['configuration']
     for i in range(len(airfoils)):
         airfoil_name = airfoils[i]['name']
-        aoa_extended = airfoils[i]['polars'][j]['re_sets'][0]['cl']['grid']
-        cl_extended = airfoils[i]['polars'][j]['re_sets'][0]['cl']['values']
-        cd_extended = airfoils[i]['polars'][j]['re_sets'][0]['cd']['values']
-        cm_extended = airfoils[i]['polars'][j]['re_sets'][0]['cm']['values']
+        for k in range(4):
+            if airfoils[i]['polars'][k]['configuration'] == config_label:
+                break
+        
+        aoa_extended = airfoils[i]['polars'][k]['re_sets'][0]['cl']['grid']
+        cl_extended = airfoils[i]['polars'][k]['re_sets'][0]['cl']['values']
+        cd_extended = airfoils[i]['polars'][k]['re_sets'][0]['cd']['values']
+        cm_extended = airfoils[i]['polars'][k]['re_sets'][0]['cm']['values']
         axs[0,0].plot(aoa_extended, cl_extended, label=airfoil_name)
         axs[0,1].plot(aoa_extended, cd_extended, label=airfoil_name)
         axs[1,0].plot(aoa_extended, cm_extended, label=airfoil_name)
@@ -161,7 +169,7 @@ for j in range(4):
     axs[0,1].set_ylabel('Cd')
     axs[1,0].set_ylabel('Cm')
     axs[1,1].set_ylabel('Cl/Cd')
-    axs[1,1].set_ylim([-100, 200])
+    axs[1,1].set_ylim([-100, 250])
 
     for ax_row in axs:
         for ax in ax_row:

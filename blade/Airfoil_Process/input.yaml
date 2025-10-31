@@ -1,0 +1,61 @@
+new:
+  directory: '/tscratch/ndeveld/airfoil/OpenFAST_Model/New'
+  numroot: 2
+  airfoils:
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga100_c_3e6.dat
+      thickness: 100
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/coord/hga_family_100.dat
+      type: xfoil
+      name: h_ga100_re_3e6
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T36_r13_cleanPol.dat
+      thickness: 36
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T36.dat
+      type: xfoil
+      name: oso_36_re13 
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T33_r16_cleanPol.dat
+      thickness: 33
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T33.dat
+      type: xfoil
+      name: oso_33_re16
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T30_r18_cleanPol.dat
+      thickness: 30
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T30.dat
+      type: xfoil
+      name: oso_30_re18
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T27_r16_cleanPol.dat
+      thickness: 27
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T27.dat
+      type: xfoil
+      name: oso_27_re16
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T24_r13_cleanPol.dat
+      thickness: 24
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T24.dat
+      type: xfoil
+      name: oso_24_re13
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/OSO_WT2_Rfoil_forIEA22/OSO_2025_WT2_T21_r12_cleanPol.dat
+      thickness: 21
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/oso-coordfiles/OSO_2025_WT2_T21.dat
+      type: xfoil
+      name: oso_21_re12
+
+old:
+  directory: '/tscratch/ndeveld/airfoil/OpenFAST_Model/Current'
+  bladefile: 'IEA-22-280-RWT/IEA-22-280-RWT_AeroDyn15_blade.dat'
+  aerodynfile: 'IEA-22-280-RWT-Monopile/IEA-22-280-RWT_AeroDyn15.dat'
+
+windio:
+  turbine_input: /tscratch/ndeveld/airfoil/From_Pietro/IEA-22-280-RWT/IEA-22-280-RWT.yaml
+  turbine_output: /tscratch/ndeveld/airfoil/OSO_Opt_3/IEA-22-280-RWT-GA.yaml
+  replacements:
+    - old: FFA-W3-360
+      new: oso_36_re13
+    - old: FFA-W3-330blend
+      new: oso_33_re16
+    - old: FFA-W3-301
+      new: oso_30_re18
+    - old: FFA-W3-270blend
+      new: oso_27_re16
+    - old: FFA-W3-241
+      new: oso_24_re13
+    - old: FFA-W3-211
+      new: oso_21_re12

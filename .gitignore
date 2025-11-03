@@ -5,6 +5,10 @@
 *.ipynb_checkpoints
 *.coverage
 *.bl
+*.gif
+*NWEA*.png
+*released_designs/OSO_2025_WT2/c67*
+*released_designs/OSO_2025_WT2/rfoil_data_bad_36*
 *postprocessing/cases/**/*.png
 *postprocessing/cases/**/*.jpg
 *postprocessing/cases/**/*.pdf

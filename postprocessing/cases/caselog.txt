@@ -129,6 +129,19 @@ Case 66:  Changed naming convention for output files, handling an error in the t
 
 Case 67:  Fixed an indexing issue that appeared with failures on the supercomputer
 
+Case 68: Catching all errors, not just failure to run errors
+
+Case 69: Adding a constraint of CL=1.5 @ alpha=10deg to the 36
+
+Case 70: Ran case 69 on the grid, however the case 69 constraint was incorrect.  Did not work well.
+
+Case 71: setting up a switch for different file systems
+
+Case 72: adding additional switches
+
+Case 73: Adding CM constraints to the airfoils
+
+
 Case 99: Only quick run changes
 Case 98: Changed the output to match
 Case 97: Updated most things but not the primary L/D objectives

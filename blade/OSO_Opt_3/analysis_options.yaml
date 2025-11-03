@@ -1,0 +1,54 @@
+general:
+    folder_output: outputs_aero
+    fname_output: blade_out
+
+design_variables:
+    control:
+        tsr:
+            flag: True
+            minimum: 8
+            maximum: 11
+
+    blade:
+        aero_shape:
+            twist:
+                flag: True # Flag to assign design variables to the blade twist 
+                inverse: False # Flag to determine twist from a desired angle of attack. 
+                # Only used if flag is set to False
+                inverse_target: 'stall_margin' # Twist generates angles of attack 
+                # corresponding to 'max_efficiency' or 'stall_margin'
+                n_opt: 20 # Number of control points along blade span. During inverse design, 
+                # twist is smoothened with a spline with these
+                max_decrease: 0.34888888888 # Maximum decrease for the twist 
+                # in [rad] at the n_opt locations. Only used if flag is set to True
+                max_increase: 0.34888888888 # Maximum increase for the twist 
+                # in [rad] at the n_opt locations. Only used if flag is set to True
+                index_start: 9 # Lock the first two DVs from blade root
+                index_end: 20 # All DVs close to blade tip are active
+
+# figure of merit
+merit_figure: Cp
+
+# constraints
+constraints:
+    blade:
+        stall:
+            flag: True # Constraint on minimum stall margin
+            margin: 0.05 # Value of minimum stall margin in [rad]
+           
+
+# driver
+driver:
+    optimization:
+        flag: True         # Flag to enable optimization
+        tol: 1.e-6          # Optimality tolerance
+        max_major_iter: 10  # Maximum number of major design iterations (SNOPT)
+        max_minor_iter: 100 # Maximum number of minor design iterations (SNOPT)
+        max_iter: 100         # Maximum number of iterations (SLSQP)
+        solver: SLSQP       # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+        step_size: 1.e-2    # Step size for finite differencing
+        form: forward       # Finite differencing mode, either forward or central
+
+recorder:
+    flag: True              # Flag to activate OpenMDAO recorder
+    file_name: log_opt.sql  # Name of OpenMDAO recorder

@@ -1,0 +1,13 @@
+cases:
+
+  - label: Baseline
+    path_parent: /tscratch/ndeveld/airfoil/Baseline1
+    blade_relpath: outputs_aero/openfast_runs/DLC1.1_0_iea22ga_0_AeroDyn_blade.dat
+    sql_relpath: outputs_aero/log_opt.sql
+    outfile_relpath: outputs_aero/openfast_runs/DLC1.1_0_iea22ga_0.out
+
+  - label: Optimized
+    path_parent: /tscratch/ndeveld/airfoil/Optimization2
+    blade_relpath: outputs_aero/openfast_runs/DLC1.1_0_iea22ga_0_AeroDyn_blade.dat
+    sql_relpath: outputs_aero/log_opt.sql
+    outfile_relpath: outputs_aero/openfast_runs/DLC1.1_0_iea22ga_0.out

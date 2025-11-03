@@ -1,0 +1,104 @@
+General:
+    verbosity: False  # When set to True, the code prints to screen many infos
+    
+    openfast_configuration:
+        OF_run_fst: iea22ga
+        use_exe: True
+        FAST_exe: /projects/wind/hpc/wind/ndeveld/em-exawind-ghost/spack/opt/spack/linux-rhel8-broadwell/intel-2023.2.0/openfast-4.0.2-evd254rcmykne5cvs6cvvvx3dkhzxckm/bin/openfast
+        path2dll: /projects/wind/hpc/wind/ndeveld/em-exawind-ghost/spack/opt/spack/linux-rhel8-broadwell/intel-2023.2.0/rosco-2.9.0-mg6c46gm4mmctfasbydcenh43f6hxi3x/lib/libdiscon.so
+        turbsim_exe: /projects/wind/hpc/wind/ndeveld/em-exawind-ghost/spack/opt/spack/linux-rhel8-broadwell/intel-2023.2.0/openfast-4.0.2-evd254rcmykne5cvs6cvvvx3dkhzxckm/bin/turbsim
+
+WISDEM:
+    RotorSE:
+        flag: True
+        spar_cap_ss: Spar_Cap_SS
+        spar_cap_ps: Spar_Cap_PS
+        te_ss: TE_reinforcement_SS
+        te_ps: TE_reinforcement_PS
+        n_span: 60
+    DriveSE:
+        flag: True
+    TowerSE:
+        flag: True
+        wind: PowerWind  # Wind used
+        gamma_f: 1.35    # Safety factor for fatigue loads
+        gamma_m: 1.3     # Safety factor for material properties
+        gamma_n: 1.0     # Safety factor for ...
+        gamma_b: 1.1     # Safety factor for ...
+        gamma_fatigue: 1.755  # Safety factor for fatigue loads
+        buckling_length: 30    # Buckling parameter
+        soil_springs: True
+        gravity_foundation: False
+        frame3dd:
+            shear: True
+            geom: True
+            tol: 1e-9
+    FixedBottomSE:
+        flag: False
+        soil_springs: True
+    BOS:
+        flag: False
+
+OpenFAST: # Options for WEIS fidelity level 3 = nonlinear time domain
+    flag: True
+    simulation:
+        DT: 0.0004
+        CompElast: 2
+        CompInflow: 1
+        CompAero: 2
+        CompServo: 1
+        OutFileFmt: 1
+    linearization:
+        Linearize: False
+    ElastoDyn:      # DZ: taking level 2 DOFs from here now, let's set linearization DOFs in Level 2 modelling options next
+        flag: True
+        FlapDOF1: True
+        FlapDOF2: True
+        EdgeDOF: True
+        TeetDOF: False
+        DrTrDOF: False 
+        GenDOF: True
+        YawDOF: False  
+        TwFADOF1 : True
+        TwFADOF2 : True
+        TwSSDOF1 : True
+        TwSSDOF2 : True
+        PtfmSgDOF: False
+        PtfmSwDOF: False
+        PtfmHvDOF: False
+        PtfmRDOF : False
+        PtfmPDOF : False
+        PtfmYDOF : False
+        #BldFile1 : Elastodyn_Blade_Placeholder1.dat
+        #BldFile2 : Elastodyn_Blade_Placeholder2.dat
+        #BldFile3 : Elastodyn_Blade_Placeholder3.dat
+    BeamDyn:
+        DTBeam: 0.0004
+    BeamDynBlade:
+        mu1: 0.004048 
+        mu2: 0.003153 
+        mu3: 0.000140 
+        mu4: 0.003153 
+        mu5: 0.004048 
+        mu6: 0.000140
+    AeroDyn:
+        BEM_Mod: 2
+        DBEMT_Mod: 0
+        Wake_Mod: 1
+        UA_Mod: 0
+    ServoDyn:
+        YawSpr: 4.6273E+10
+        YawDamp: 3.9088E+07
+        WaveTMax: 1 #3630
+
+ROSCO:
+    flag: True
+
+    
+DLC_driver:
+    DLCs:
+        - DLC: "1.1"
+          wind_speed: [8]
+          n_seeds: 1
+          analysis_time: 120.
+          transient_time: 60.

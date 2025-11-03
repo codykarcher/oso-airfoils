@@ -1,0 +1,234 @@
+! ------------ AirfoilInfo v1.01.x Input File ----------------------------------
+! AeroElasticSE FAST driver
+! line
+! line
+! ------------------------------------------------------------------------------
+DEFAULT                  InterpOrd   ! Interpolation order to use for quasi-steady table lookup {1=linear; 3=cubic spline; "default"} [default=3]
+1                        NonDimArea  ! The non-dimensional area of the airfoil (area/chord^2) (set to 1.0 if unsure or unneeded)
+0          NumCoords   ! The number of coordinates in the airfoil shape file. Set to zero if coordinates not included.
+0          BL_file     ! The file name including the boundary layer characteristics of the profile. Ignored if the aeroacoustic module is not called.
+1                        NumTabs     ! Number of airfoil tables in this file.  Each table must have lines 16.5          Re and Ctrl.
+! ------------------------------------------------------------------------------
+! data for table 1 
+! ------------------------------------------------------------------------------
+16.5          Re          ! Reynolds number in millions
+0                        Ctrl        ! Control setting (must be 0 for current AirfoilInfo)
+True                     InclUAdata  ! Is unsteady aerodynamics data included in this table? If TRUE, then include 30 UA coefficients below this line
+!........................................
+-3.23          alpha0      ! 0-lift angle of attack, depends on airfoil.
+1.429109          alpha1      ! Angle of attack at f=0.7, (approximately the stall angle) for AOA>alpha0. (deg)
+-0.921774          alpha2      ! Angle of attack at f=0.7, (approximately the stall angle) for AOA<alpha0. (deg)
+1.000000                 eta_e       ! Recovery factor in the range [0.85 - 0.95] used only for UAMOD=1, it is set to 1 in the code when flookup=True. (-)
+7.498817          C_nalpha    !airfoil/OpenFAST_Model/IEA-22-280-RWT/OpenFAST/IEA-22-280-RWT-Monopile airfoil/OpenFAST_Model/IEA-22-280-RWT/OpenFAST/IEA-22-280-RWT Slope of the 2D normal force coefficient curve. (1/rad)
+Default                  T_f0        ! Initial value of the time constant associated with Df in the expression of Df and f. [default = 3]
+Default                  T_V0        ! Initial value of the time constant associated with the vortex lift decay process; it is used in the expression of Cvn. It depends on Re,M, and airfoil class. [default = 6]
+Default                  T_p         ! Boundary-layer,leading edge pressure gradient time constant in the expression of Dp. It should be tuned based on airfoil experimental data. [default = 1.7]
+Default                  T_VL        ! Initial value of the time constant associated with the vortex advection process; it represents the non-dimensional time in semi-chords, needed for a vortex to travel from LE to trailing edge (TE); it is used in the expression of Cvn. It depends on Re, M (weakly), and airfoil. [valid range = 6 - 13, default = 11]
+Default                  b1          ! Constant in the expression of phi_alpha^c and phi_q^c.  This value is relatively insensitive for thin airfoils, but may be different for turbine airfoils. [from experimental results, defaults to 0.14]
+Default                  b2          ! Constant in the expression of phi_alpha^c and phi_q^c.  This value is relatively insensitive for thin airfoils, but may be different for turbine airfoils. [from experimental results, defaults to 0.53]
+Default                  b5          ! Constant in the expression of K'''_q,Cm_q^nc, and k_m,q.  [from  experimental results, defaults to 5]
+Default                  A1          ! Constant in the expression of phi_alpha^c and phi_q^c.  This value is relatively insensitive for thin airfoils, but may be different for turbine airfoils. [from experimental results, defaults to 0.3]
+Default                  A2          ! Constant in the expression of phi_alpha^c and phi_q^c.  This value is relatively insensitive for thin airfoils, but may be different for turbine airfoils. [from experimental results, defaults to 0.7]
+Default                  A5          ! Constant in the expression of K'''_q,Cm_q^nc, and k_m,q. [from experimental results, defaults to 1]
+0.000000                 S1          ! Constant in the f curve best-fit -3.23          alpha0<=AOA<=alpha1; by definition it depends on the airfoil. [ignored if UAMod<>1]
+0.000000                 S2          ! Constant in the f curve best-fit for         1.429109          alpha1; by definition it depends on the airfoil. [ignored if UAMod<>1]
+0.000000                 S3          ! Constant in the f curve best-fit for -3.23          alpha0; by definition it depends on the airfoil. [ignored if UAMod<>1]
+0.000000                 S4          ! Constant in the f curve best-fit for         -0.921774          alpha2; by definition it depends on the airfoil. [ignored if UAMod<>1]
+0.801422                 Cn1         ! Critical value of C0n at leading edge separation. It should be extracted from airfoil data at a given Mach and Reynolds number. It can be calculated from the static value of Cn at either the break in the pitching moment or the loss of chord force at the onset of stall. It is close to the condition of maximum lift of the airfoil at low Mach numbers.
+-0.524438                Cn2         ! As Cn1 for negative AOAs.
+Default                  St_sh       ! Strouhal's shedding frequency constant.  [default = 0.19]
+0.235318                 Cd0         ! 2D drag coefficient value at 0-lift.
+-0.033969                Cm0         ! 2D pitching moment coefficient about 1/4-chord location, at 0-lift, positive if nose up. [If the aerodynamics coefficients table does not include a column for Cm, this needs to be set to 0.0]
+0.000000                 k0          ! Constant in the \hat(x)_cp curve best-fit; = (\hat(x)_AC-0.25).  [ignored if UAMod<>1]
+0.000000                 k1          ! Constant in the \hat(x)_cp curve best-fit.  [ignored if UAMod<>1]
+0.000000                 k2          ! Constant in the \hat(x)_cp curve best-fit.  [ignored if UAMod<>1]
+0.000000                 k3          ! Constant in the \hat(x)_cp curve best-fit.  [ignored if UAMod<>1]
+0.000000                 k1_hat      ! Constant in the expression of Cc due to leading edge vortex effects.  [ignored if UAMod<>1]
+Default                  x_cp_bar    ! Constant in the expression of \hat(x)_cp^v. [ignored if UAMod<>1, default = 0.2]
+Default                  UACutout    ! Angle of attack above which unsteady aerodynamics are disabled (deg). [Specifying the string "Default" sets UACutout to 45 degrees]
+Default                  filtCutOff  ! Cut-off frequency (-3 dB corner frequency) for low-pass filtering the AoA input to UA, as well as the 1st and 2nd derivatives (Hz) [default = 20]
+!........................................
+! Table of aerodynamics coefficients
+181          NumAlf      ! Number of data lines in the following table
+!    Alpha      Cl      Cd        Cm
+!    (deg)      (-)     (-)       (-)
+-180.000000 0.0 0.150402 0.0
+-178.428571 0.067065 0.150467 0.062857
+-176.857143 0.13413 0.150663 0.125714
+-175.285714 0.201195 0.150989 0.188571
+-173.714286 0.26826 0.151442 0.251429
+-172.142857 0.335324 0.152021 0.314286
+-170.571429 0.402389 0.152723 0.377143
+-169.000000 0.469454 0.153544 0.416095
+-167.428571 0.536519 0.154481 0.441387
+-165.857143 0.603584 0.155528 0.466678
+-164.285714 0.670649 0.15668 0.49197
+-162.714286 0.737714 0.157931 0.517262
+-161.142857 0.804779 0.159275 0.542554
+-159.571429 0.871844 0.160705 0.553631
+-158.000000 0.938908 0.162214 0.526802
+-153.142857 0.736286 0.167286 0.443877
+-148.285714 0.590336 0.172771 0.371871
+-143.428571 0.478629 0.178377 0.319884
+-138.571429 0.389337 0.18379 0.275669
+-133.714286 0.315688 0.188683 0.250107
+-128.857143 0.253589 0.192724 0.227314
+-124.000000 0.200476 0.195594 0.213524
+-119.142857 0.154724 0.196987 0.200767
+-114.285714 0.115307 0.196632 0.192839
+-109.428571 0.081605 0.194294 0.185233
+-104.571429 0.053282 0.189785 0.180046
+-99.714286 0.030207 0.182973 0.174907
+-94.857143 0.0124 0.173785 0.170513
+-90.000000 0.0 0.162214 0.166119
+-85.142857 -0.0124 0.173785 0.167519
+-80.285714 -0.030207 0.182973 0.168919
+-75.428571 -0.053282 0.189785 0.17007
+-70.571429 -0.081605 0.194294 0.171206
+-65.714286 -0.115307 0.196632 0.172847
+-60.857143 -0.154724 0.196987 0.174555
+-56.000000 -0.200476 0.195594 0.177003
+-51.142857 -0.253589 0.192724 0.179611
+-46.285714 -0.315688 0.188683 0.182253
+-41.428571 -0.389337 0.18379 0.184905
+-36.571429 -0.478629 0.178377 0.184267
+-31.714286 -0.590336 0.172771 0.182258
+-26.857143 -0.736286 0.167286 0.112537
+-22.000000 -0.938908 0.162214 0.005882
+-21.928571 -0.931105 0.160595 0.004313
+-21.857143 -0.923302 0.158977 0.002745
+-21.785714 -0.9155 0.157358 0.001176
+-21.714286 -0.907697 0.155739 -0.000392
+-21.642857 -0.899894 0.154121 -0.00196
+-21.571429 -0.892091 0.152502 -0.003529
+-21.500000 -0.884288 0.150884 -0.005097
+-21.428571 -0.876485 0.149265 -0.006666
+-21.357143 -0.868682 0.147647 -0.008234
+-21.285714 -0.860879 0.146028 -0.009803
+-21.214286 -0.853076 0.14441 -0.011371
+-21.142857 -0.845273 0.142791 -0.01294
+-21.000000 -0.829667 0.139554 -0.016077
+-20.000000 -0.785607 0.13238 -0.022669
+-19.000000 -0.740474 0.125347 -0.028725
+-18.500000 -0.717921 0.121809 -0.031519
+-17.500000 -0.675023 0.114332 -0.03714
+-17.000000 -0.64596 0.111702 -0.040365
+-16.500000 -0.600402 0.11155 -0.044902
+-16.000000 -0.584479 0.106933 -0.047007
+-15.500000 -0.571872 0.102048 -0.049037
+-14.500000 -0.550301 0.091955 -0.052891
+-14.000000 -0.541161 0.086798 -0.05505
+-13.500000 -0.542395 0.080756 -0.056983
+-13.000000 -0.577813 0.071577 -0.05905
+-12.500000 -0.623996 0.061654 -0.061028
+-12.000000 -0.680659 0.050868 -0.063058
+-11.500000 -0.715013 0.042607 -0.064705
+-11.000000 -0.823889 0.029745 -0.065486
+-10.500000 -0.974435 0.007934 -0.089994
+-10.000000 -0.906344 0.007487 -0.093515
+-9.500000 -0.838721 0.007193 -0.09656
+-9.000000 -0.771466 0.006977 -0.099354
+-8.500000 -0.704327 0.00682 -0.101976
+-8.000000 -0.637264 0.006698 -0.104496
+-7.500000 -0.570275 0.006595 -0.106947
+-7.000000 -0.503237 0.006506 -0.109345
+-6.500000 -0.436422 0.006445 -0.111642
+-6.000000 -0.369525 0.00639 -0.113913
+-5.500000 -0.30259 0.006332 -0.116169
+-5.000000 -0.235899 0.006304 -0.118321
+-4.500000 -0.16913 0.006272 -0.120456
+-4.000000 -0.102499 0.006256 -0.122523
+-3.500000 -0.036069 0.006256 -0.124516
+-3.000000 0.030265 0.006265 -0.126447
+-2.500000 0.096763 0.006255 -0.128413
+-2.000000 0.163021 0.006264 -0.1303
+-1.500000 0.229199 0.006277 -0.132142
+-1.000000 0.2953 0.006291 -0.133936
+-0.500000 0.361059 0.006328 -0.135633
+0.000000 0.426817 0.006358 -0.137323
+0.500000 0.492641 0.006379 -0.138997
+1.000000 0.558103 0.006418 -0.14058
+1.500000 0.623157 0.00648 -0.142052
+2.000000 0.688383 0.006522 -0.143538
+2.500000 0.753311 0.006575 -0.144955
+3.000000 0.817891 0.006642 -0.146288
+3.500000 0.882232 0.006715 -0.147544
+4.000000 0.946313 0.006796 -0.14873
+4.500000 1.009968 0.006891 -0.149831
+5.000000 1.073237 0.006996 -0.150845
+5.500000 1.136282 0.007102 -0.151789
+6.000000 1.197536 0.0073 -0.152396
+6.500000 1.25843 0.007499 -0.152932
+7.000000 1.31807 0.007752 -0.15323
+7.500000 1.371615 0.008299 -0.152429
+8.000000 1.424023 0.008882 -0.151416
+8.500000 1.478783 0.009259 -0.150804
+9.000000 1.53059 0.009713 -0.149654
+9.500000 1.580265 0.010188 -0.148103
+10.000000 1.620777 0.010947 -0.14495
+10.500000 1.648985 0.011783 -0.139496
+11.000000 1.670232 0.012835 -0.132958
+11.500000 1.68921 0.014133 -0.126481
+12.000000 1.712322 0.015329 -0.121017
+12.500000 1.729563 0.016816 -0.115115
+13.000000 1.745087 0.018516 -0.109584
+13.500000 1.750898 0.020902 -0.10378
+14.000000 1.719705 0.026893 -0.098751
+14.500000 1.679631 0.033828 -0.094014
+15.000000 1.433994 0.063018 -0.096103
+15.500000 1.308163 0.081811 -0.100046
+16.000000 1.265892 0.093328 -0.104514
+16.500000 1.25483 0.101166 -0.107876
+17.000000 1.239226 0.109936 -0.112264
+17.500000 1.242614 0.116283 -0.115661
+18.000000 1.246864 0.122417 -0.119131
+18.500000 1.251433 0.128509 -0.122827
+19.000000 1.26044 0.134021 -0.126429
+19.500000 1.278049 0.138155 -0.129304
+20.000000 1.286829 0.143565 -0.133135
+20.500000 1.298249 0.148688 -0.137062
+21.000000 1.311604 0.153615 -0.140984
+21.500000 1.326919 0.157634 -0.144386
+22.000000 1.341298 0.162214 -0.148397
+26.857143 1.051837 0.167286 -0.181152
+31.714286 0.843337 0.172771 -0.202719
+36.571429 0.683756 0.178377 -0.203776
+41.428571 0.556195 0.18379 -0.202857
+46.285714 0.450983 0.188683 -0.197199
+51.142857 0.362269 0.192724 -0.191593
+56.000000 0.286395 0.195594 -0.18616
+60.857143 0.221034 0.196987 -0.181031
+65.714286 0.164724 0.196632 -0.177321
+70.571429 0.116578 0.194294 -0.17379
+75.428571 0.076117 0.189785 -0.171605
+80.285714 0.043153 0.182973 -0.169452
+85.142857 0.017714 0.173785 -0.167786
+90.000000 0.0 0.162214 -0.166119
+94.857143 -0.0124 0.173785 -0.170513
+99.714286 -0.030207 0.182973 -0.174907
+104.571429 -0.053282 0.189785 -0.180046
+109.428571 -0.081605 0.194294 -0.185233
+114.285714 -0.115307 0.196632 -0.192839
+119.142857 -0.154724 0.196987 -0.200767
+124.000000 -0.200476 0.195594 -0.213524
+128.857143 -0.253589 0.192724 -0.227314
+133.714286 -0.315688 0.188683 -0.250107
+138.571429 -0.389337 0.18379 -0.275669
+143.428571 -0.478629 0.178377 -0.319884
+148.285714 -0.590336 0.172771 -0.371871
+153.142857 -0.736286 0.167286 -0.443877
+158.000000 -0.938908 0.162214 -0.526802
+159.571429 -0.871844 0.160705 -0.553631
+161.142857 -0.804779 0.159275 -0.553982
+162.714286 -0.737714 0.157931 -0.544405
+164.285714 -0.670649 0.15668 -0.534827
+165.857143 -0.603584 0.155528 -0.52525
+167.428571 -0.536519 0.154481 -0.515672
+169.000000 -0.469454 0.153544 -0.506095
+170.571429 -0.402389 0.152723 -0.471429
+172.142857 -0.335324 0.152021 -0.392857
+173.714286 -0.26826 0.151442 -0.314286
+175.285714 -0.201195 0.150989 -0.235714
+176.857143 -0.13413 0.150663 -0.157143
+178.428571 -0.067065 0.150467 -0.078571
+180.000000 0.0 0.150402 0.0

@@ -1,0 +1,9 @@
+
+    # airfoil_files = ['/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga15_c_10e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga18_c_10e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga21_c_12e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga24_c_13e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga27_c_16e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga30_c_18e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga33_c_16e6.dat',
+    #                  '/tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga36_c_13e6.dat']

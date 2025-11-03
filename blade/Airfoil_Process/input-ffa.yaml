@@ -1,0 +1,61 @@
+new:
+  directory: '/tscratch/ndeveld/airfoil/OpenFAST_Model/New'
+  numroot: 2
+  airfoils:
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/clean/h_ga100_c_3e6.dat
+      thickness: 100
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/Hand_GA2_Family_RFoil/coord/hga_family_100.dat
+      type: xfoil
+      name: h_ga100_re_3e6
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-360_r13_cleanPol_RF6e_DragOff.dat
+      thickness: 36
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-360_fittedCST10.dat
+      type: xfoil
+      name: ffa_36_re13 
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-332_r16_cleanPol_RF6e_DragOff.dat
+      thickness: 33
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-332_fittedCST10.dat
+      type: xfoil
+      name: ffa_33_re16
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-301_r18_cleanPol_RF6e_DragOff.dat
+      thickness: 30
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-301_fittedCST10.dat
+      type: xfoil
+      name: ffa_30_re18
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-270_r16_cleanPol_RF6e_DragOff.dat
+      thickness: 27
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-270_fittedCST10.dat
+      type: xfoil
+      name: ffa_27_re16
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-241_r13_cleanPol_RF6e_DragOff.dat
+      thickness: 24
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-241_fittedCST10.dat
+      type: xfoil
+      name: ffa_24_re13
+    - polar: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA_fitted_Rfoil/FFA-W3-211_r12_cleanPol_RF6e_DragOff.dat
+      thickness: 21
+      coords: /tscratch/ndeveld/airfoil/Airfoil_Data/FFA/FFA-W3-211_fittedCST10.dat
+      type: xfoil
+      name: ffa_21_re12
+
+old:
+  directory: '/tscratch/ndeveld/airfoil/OpenFAST_Model/Current'
+  bladefile: 'IEA-22-280-RWT/IEA-22-280-RWT_AeroDyn15_blade.dat'
+  aerodynfile: 'IEA-22-280-RWT-Monopile/IEA-22-280-RWT_AeroDyn15.dat'
+
+windio:
+  turbine_input: /tscratch/ndeveld/airfoil/From_Pietro/IEA-22-280-RWT/IEA-22-280-RWT.yaml
+  turbine_output: /tscratch/ndeveld/airfoil/FFA_Opt_1/IEA-22-280-RWT-FFA.yaml
+  replacements:
+    - old: FFA-W3-360
+      new: ffa_36_re13
+    - old: FFA-W3-330blend
+      new: ffa_33_re16
+    - old: FFA-W3-301
+      new: ffa_30_re18
+    - old: FFA-W3-270blend
+      new: ffa_27_re16
+    - old: FFA-W3-241
+      new: ffa_24_re13
+    - old: FFA-W3-211
+      new: ffa_21_re12

@@ -3,7 +3,7 @@ Airfoil_Name = {'OSO_2025_WT2_T21';'OSO_2025_WT2_T24';'OSO_2025_WT2_T27';'OSO_20
 Analysis performed using RFoil v. 3.0.  
 Clean Case uses N_factor of 9.0 clean with free transition.
 Rough case uses N_factor of 3.0 with transition fixed at x/c 0.05 on the suction and pressure surfaces.
-Re = 3, 6, 10, 15, 20 million chordwise Reynolds number
+Re = 2, 3, 5, 6, 9, 10, 12, 15, 20 million chordwise Reynolds number
 delta AoA = 0.1 deg., AoA sweeps run form -24 to 24 deg., but many cases do not reach the extremes
 Mach = 0.0
 cr for the rotational augmentation model was set to 0.0

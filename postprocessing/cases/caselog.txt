@@ -151,21 +151,24 @@ Case 95: Removed all constraints from 96 (kept straight rejects)
 Case 94-80: incrementally added the constraints
 
 
+Case renumbering reset after completion of the WT2 family
 
-Add more rough weighting
-penalize clean above 200? 190?
-Re-do 30%
-spar location
-Rest of family
+Case 101:  Same as case 73, sweeping out a pareto front for the airfoils
+Case 102:  Removed all performance constraints from 101 except rough and geometry
+Case 103:  Same as case 72, sweeping out a pareto front for the airfoils
+Case 104:  Removed all performance constraints from 103 except rough and geometry
 
+Case 105:  Attempting an NSGA-II algorithm on workstation
+Case 106:  Adding back the file system, N_tries, and moment flags.  Made some tweaks to the NSGA algorithm
+Case 107:  Back to the original NSGA-II Algorithm, but with double the population size
+Case 108:  Adding TE gap as a design variable and fixing the tau computations in Kulfan
+Case 109:  Adding a TE curvature constraint, reverting to old TE gaps as lower constraints
+Case 110:  Changing tempfile names for xfoil, removing tegap as a design variable (it always went to min)
+Case 111:  Attempt at running on the supercomputer, mixed success
+Case 112:  Complete re-write for use with Json files, objective function has been updated
+Case 113:  First attempt at running hydrofoils with the json-loaded objective function, needed further updates
+Case 114:  Running the first pass at the hydrofoils using NeuralFoil.  Updated NSGA sort.
+Case 115:  Running big sweeps of hydrofoil and airfoil on supercomputer
 
-rerun the 30
-send alan the full family for run on grid
-Begin to sweep over many CL input values
-Mess with the objective function to observe behavior for paper
-Constrain the angle of attack to match existing 22mw as bonus study
-
-spar integraion from the FFA paper---Needs to integrate blade design, do not do this now
-    Write a note on this
 
 

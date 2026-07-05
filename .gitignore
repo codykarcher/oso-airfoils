@@ -26,13 +26,6 @@ t_*
 # OpenFAST / TurbSim binary wind files
 *.bts
 
-# Large simulation output directories
-blade/Baseline2/outputs_aero/openfast_runs/
-blade/FFA_Opt_1/outputs_aero/openfast_runs/
-blade/OSO_Opt_3/outputs_aero/openfast_runs/
-
 # Simulation log files
 *.log
 
-# Sweep output data (large generated outputs)
-oso_airfoils/runfiles/sweeps/

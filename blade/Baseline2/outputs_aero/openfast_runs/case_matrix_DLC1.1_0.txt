@@ -1,3 +1,0 @@
- Case_ID      AeroDyn            ElastoDyn            ElastoDyn            ElastoDyn       ElastoDyn      ElastoDyn       Fst    Fst    InflowWind  SeaState   SeaState  SeaState   TurbSim   
-             tau1_const           BlPitch1             BlPitch2             BlPitch3         NacYaw        RotSpeed       TMax  TStart  HWindSpeed   WaveHs   WaveSeed1   WaveTp   RandSeed1  
-    0     33.3807979261357  -0.9549247399288653  -0.9549247399288653  -0.9549247399288653      0      5.081423052608537  180.0   60.0      8.0        1.32    304524126    8.01    1501552846 

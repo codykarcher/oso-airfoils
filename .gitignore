@@ -29,3 +29,6 @@ t_*
 # Simulation log files
 *.log
 
+# Working draft of the 2026 paper
+publications/papers/2026/initial_draft/
+

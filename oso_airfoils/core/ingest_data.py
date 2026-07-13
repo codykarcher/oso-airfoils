@@ -654,7 +654,7 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
 
     Parameters
     ----------
-    mode : {'xfoil_run', 'neuralfoil_run', 'rfoil_data', 'xfoil_data'}
+    mode : {'xfoil_run', 'qfoil_run', 'neuralfoil_run', 'rfoil_data', 'xfoil_data', 'qfoil_data'}
         Data source / collection method.
     name : str
         Airfoil name, validated against the .dat files in *datfiles_dir*.
@@ -664,8 +664,8 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
     datfiles_dir : path-like
         Directory containing the family's ``.dat`` geometry files.
 
-    Run-mode kwargs  (xfoil_run / neuralfoil_run)
-    --------------------------------------------
+    Run-mode kwargs  (xfoil_run / qfoil_run / neuralfoil_run)
+    ----------------------------------------------------------
     alpha : float | [start, stop, step]
         Single point (float) or alpha sweep (3-element list).
     Re : float
@@ -674,16 +674,16 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
     N_crit : float, default 9.0
     xtp_u : float, default 1.0   forced upper transition location
     xtp_l : float, default 1.0   forced lower transition location
-    run_mode : {'alpha', 'cl'}, default 'alpha'          [xfoil_run only]
-    N_panels : int, default 160                          [xfoil_run only]
+    run_mode : {'alpha', 'cl'}, default 'alpha'          [xfoil_run / qfoil_run]
+    N_panels : int, default 160                          [xfoil_run / qfoil_run]
     model : str, default 'xxlarge'                       [neuralfoil_run only]
-    save_boundary_layer_data : bool, default False       [xfoil_run only]
+    save_boundary_layer_data : bool, default False       [xfoil_run / qfoil_run]
     cases : list of dict
         Multiple run conditions.  Each dict may contain any of the kwargs
         listed above.  When provided, all top-level run kwargs are ignored.
 
-    Data-mode kwargs  (rfoil_data / xfoil_data)
-    -------------------------------------------
+    Data-mode kwargs  (rfoil_data / xfoil_data / qfoil_data)
+    ---------------------------------------------------------
     polar_file : path-like
         Single polar file path.
     polar_files : list of path-like
@@ -697,7 +697,7 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
 
     # For data modes, name and json_path may be None (inferred per-file below)
     if name is None:
-        if mode not in ('rfoil_data', 'xfoil_data'):
+        if mode not in ('rfoil_data', 'xfoil_data', 'qfoil_data'):
             raise ValueError("name is required for run modes.")
         afl  = None
         data = None
@@ -715,10 +715,15 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
     new_records = []
 
     # ── xfoil_run ──────────────────────────────────────────────────────── #
-    if mode == 'xfoil_run':
-        from oso_airfoils.core.xfoil_wrapper import run as _xfoil
+    if mode in ('xfoil_run', 'qfoil_run'):
+        _source_tag = 'xfoil' if mode == 'xfoil_run' else 'qfoil'
+        if mode == 'xfoil_run':
+            from oso_airfoils.core.xfoil_wrapper import run as _runner
+            _version = _get_xfoil_version()
+        else:
+            from oso_airfoils.core.qfoil_wrapper import run as _runner
+            _version = None
 
-        _xfoil_version = _get_xfoil_version()
         cases = kwargs.pop('cases', None)
         if cases is None:
             cases = [kwargs]
@@ -743,18 +748,17 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
                 xtp_u=xtp_u, xtp_l=xtp_l,
                 save_boundary_layer_data=save_bl,
             )
+            _rec_kw = dict(version=_version) if _version is not None else {}
             if _is_sweep_spec(alpha):
-                # [start, stop, step] — pass directly to wrapper
-                res = _xfoil(val=alpha, **_shared)
-                new_records.extend(_wrapper_result_to_records('xfoil', res, version=_xfoil_version))
+                res = _runner(val=alpha, **_shared)
+                new_records.extend(_wrapper_result_to_records(_source_tag, res, **_rec_kw))
             else:
-                # explicit list of alpha values — one wrapper call per point
                 for a in alpha:
                     try:
-                        res = _xfoil(val=float(a), **_shared)
-                        new_records.extend(_wrapper_result_to_records('xfoil', res, version=_xfoil_version))
+                        res = _runner(val=float(a), **_shared)
+                        new_records.extend(_wrapper_result_to_records(_source_tag, res, **_rec_kw))
                     except Exception:
-                        pass  # non-convergence at this alpha — skip
+                        pass
 
     # ── neuralfoil_run ─────────────────────────────────────────────────── #
     elif mode == 'neuralfoil_run':
@@ -806,27 +810,33 @@ def ingest(mode, name, json_path, datfiles_dir, perf_dir=None, **kwargs):
             except Exception as exc:
                 print(f"  [rfoil_data] WARNING: could not parse '{pf.name}' — {exc}")
 
-    # ── xfoil_data ─────────────────────────────────────────────────────── #
-    elif mode == 'xfoil_data':
+    # ── xfoil_data / qfoil_data ────────────────────────────────────────── #
+    elif mode in ('xfoil_data', 'qfoil_data'):
+        _source_tag = 'xfoil' if mode == 'xfoil_data' else 'qfoil'
         N_panels    = kwargs.pop('N_panels', None)
         polar_files = _resolve_polar_files(kwargs)
         if name is None:
             _write_data_files_by_inference(
-                'xfoil_data', polar_files,
+                mode, polar_files,
                 lambda pf: _parse_xfoil_polar(pf, N_panels=N_panels),
                 datfiles_dir, perf_dir,
             )
             return
         for pf in polar_files:
             try:
-                new_records.extend(_parse_xfoil_polar(pf, N_panels=N_panels))
+                records = _parse_xfoil_polar(pf, N_panels=N_panels)
+                # Re-tag the source if needed (xfoil polar format is identical for qfoil)
+                if _source_tag == 'qfoil':
+                    for r in records:
+                        r['source'] = 'qfoil'
+                new_records.extend(records)
             except Exception as exc:
-                print(f"  [xfoil_data] WARNING: could not parse '{pf.name}' — {exc}")
+                print(f"  [{mode}] WARNING: could not parse '{pf.name}' — {exc}")
 
     else:
         raise ValueError(
             f"Unknown mode '{mode}'. Must be one of: "
-            "'xfoil_run', 'neuralfoil_run', 'rfoil_data', 'xfoil_data'."
+            "'xfoil_run', 'qfoil_run', 'neuralfoil_run', 'rfoil_data', 'xfoil_data', 'qfoil_data'."
         )
 
     merged, n_added, n_skipped, n_updated, n_conflicted = _merge_runs(

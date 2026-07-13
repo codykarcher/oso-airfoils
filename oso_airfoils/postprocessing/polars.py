@@ -59,14 +59,17 @@ _PALETTE = dcc
 matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=_PALETTE)
 
 _DEFAULT_STYLE: dict[str, Any] = {
-    'linewidth':      1.5,
-    'fontsize':       15,
-    'fig_width':      25,
-    'bot_row_height': 7.0,
-    'dpi':            300,
-    'wspace':         0.12,
-    'N_marks':        8,
-    'palette':        _PALETTE,
+    'linewidth':           1.5,
+    'fontsize':            15,   # kept for back-compat; sets both label and legend size
+    'label_fontsize':      None, # axis labels / tick labels (falls back to 'fontsize')
+    'legend_fontsize':     None, # top-panel legend text     (falls back to 'fontsize')
+    'plot_legend_fontsize': None, # in-plot (bottom row) legends (falls back to 'fontsize')
+    'fig_width':           25,
+    'bot_row_height':      7.0,
+    'dpi':                 300,
+    'wspace':              0.12,
+    'N_marks':             8,
+    'palette':             _PALETTE,
     'cmap_rainbow':        'turbo',
     'cmap_lower_rainbow':  0.10,
     'cmap_upper_rainbow':  0.90,
@@ -76,7 +79,7 @@ _DEFAULT_STYLE: dict[str, Any] = {
 }
 
 # Tool priority order for linestyle assignment
-_TOOL_ORDER = ['xfoil', 'rfoil', 'neuralfoil']
+_TOOL_ORDER = ['xfoil', 'qfoil', 'rfoil', 'neuralfoil']
 
 
 # ── colour / geometry helpers ─────────────────────────────────────────────────
@@ -227,7 +230,7 @@ def _tool_linestyle(tool: str, turb_idx: int, active_tools: list[str]) -> Any:
 
 
 def _tool_label(tool: str) -> str:
-    return {'xfoil': 'XFOIL', 'neuralfoil': 'NeuralFoil', 'rfoil': 'RFoil'}.get(tool, tool)
+    return {'xfoil': 'XFOIL', 'qfoil': 'QFOIL', 'neuralfoil': 'NeuralFoil', 'rfoil': 'RFoil'}.get(tool, tool)
 
 
 def _coords_from_geometry(geom) -> list[tuple]:
@@ -286,6 +289,11 @@ def polarPlot(
     st = dict(_DEFAULT_STYLE)
     if style:
         st.update(style)
+
+    _label_fs       = st['label_fontsize']       if st['label_fontsize']       is not None else st['fontsize']
+    _legend_fs      = st['legend_fontsize']      if st['legend_fontsize']      is not None else st['fontsize']
+    _plot_legend_fs = st['plot_legend_fontsize'] if st['plot_legend_fontsize'] is not None else st['fontsize']
+    plt.rcParams.update({'font.size': _label_fs})
 
     palette = st['palette']
 
@@ -421,6 +429,7 @@ def polarPlot(
                 leg = ax_legend.legend(
                     handles=handles, loc='upper left', frameon=False,
                     bbox_to_anchor=(x_anchor, 0.95),
+                    fontsize=_legend_fs,
                 )
                 if ci < len(_eff) - 1:
                     ax_legend.add_artist(leg)
@@ -548,13 +557,13 @@ def polarPlot(
         Line2D([0], [0], color='black', linestyle='-', label='$C_L$'),
         Line2D([0], [0], color='black', linestyle='-', marker='o',
                markersize=3, label='$C_M$'),
-    ], loc='upper left', framealpha=1.0)
+    ], loc='upper left', framealpha=1.0, fontsize=_plot_legend_fs)
 
     ax4.legend(handles=[
         Line2D([0], [0], color='black', linestyle='-', label='Upper'),
         Line2D([0], [0], color='black', linestyle='-', marker='o',
                markersize=3, label='Lower'),
-    ], loc='lower right', framealpha=1.0)
+    ], loc='lower right', framealpha=1.0, fontsize=_plot_legend_fs)
 
     return fig
 
@@ -570,6 +579,7 @@ def _build_legend_cols(
     is_rainbow: bool,
     multi_re: bool,
     st: dict,
+    suppress_re: bool = False,
 ):
     """Build three legend column lists for polarPlot.
 
@@ -597,7 +607,10 @@ def _build_legend_cols(
             color = linecolors_by_name.get(name, palette[i % len(palette)])
             legend_col_1.append({'text': name, 'linestyle': '-', 'linecolor': color, 'markersize': 0})
 
-    # Re entries
+    # Re entries — when multi-Re, build a separate Re column; when single Re,
+    # prepend it as a header in legend_col_3 so it renders on top and the
+    # legend is reduced to two columns (avoids overlap / z-order issues).
+    single_re = (not multi_re) and (len(set(reynolds_numbers)) == 1)
     for re in reynolds_numbers:
         if re in seen_re:
             continue
@@ -605,12 +618,21 @@ def _build_legend_cols(
         if multi_re:
             frac = (np.log10(re) - np.log10(re_min)) / max(np.log10(re_max) - np.log10(re_min), 1e-9)
             grey = get_fractional_color(frac, 'Greys', lower=0.3, upper=0.8)
-            legend_col_2.append({'text': 'Re=%.2e' % re, 'linestyle': '-', 'linecolor': grey, 'markersize': 0})
-        else:
-            legend_col_2.append({'text': 'Re=%.2e' % re, 'linestyle': '-', 'linecolor': 'k', 'markersize': 0})
+            if not suppress_re:
+                legend_col_2.append({'text': 'Re=%.2e' % re, 'linestyle': '-', 'linecolor': grey, 'markersize': 0})
+        elif not single_re:
+            if not suppress_re:
+                legend_col_2.append({'text': 'Re=%.2e' % re, 'linestyle': '-', 'linecolor': 'k', 'markersize': 0})
 
     # Tool / turbulence entries
     sorted_tools = sorted(tools, key=lambda t: _TOOL_ORDER.index(t) if t in _TOOL_ORDER else 99)
+
+    # When there is only one Re, prepend it as a header entry so it appears
+    # in the same (last) legend column that renders on top.
+    if single_re and not suppress_re:
+        re_val = list(set(reynolds_numbers))[0]
+        legend_col_3.append({'text': 'Re=%.2e' % re_val, 'linestyle': '-', 'linecolor': 'k', 'markersize': 0})
+
     for tool in sorted_tools:
         label = _tool_label(tool)
         for ii, tc in enumerate(turb_cases):
@@ -638,6 +660,7 @@ def polars_compare(
     cl_design=None,
     legend_ncols=None,
     style=None,
+    force_compare_mode: bool = False,
 ):
     """Polar comparison plot from pre-computed run records.
 
@@ -677,12 +700,18 @@ def polars_compare(
     if style:
         st.update(style)
 
+    # Resolve per-element font sizes (fall back to the unified 'fontsize' key)
+    _label_fs       = st['label_fontsize']       if st['label_fontsize']       is not None else st['fontsize']
+    _legend_fs      = st['legend_fontsize']      if st['legend_fontsize']      is not None else st['fontsize']
+    _plot_legend_fs = st['plot_legend_fontsize'] if st['plot_legend_fontsize'] is not None else st['fontsize']
+    plt.rcParams.update({'font.size': _label_fs})
+
     if color_override is None:
         color_override = {}
     if turb_cases is None:
         turb_cases = [[9.0, 1.0, 1.0]]
 
-    if len(data_dict) > 5 and len(reynolds_numbers) > 1:
+    if not force_compare_mode and len(data_dict) > 5 and len(reynolds_numbers) > 1:
         raise ValueError(
             'Too many airfoils and Reynolds numbers — the plot would be overcrowded. '
             'Reduce airfoils or Reynolds numbers.'
@@ -694,7 +723,18 @@ def polars_compare(
 
     re_min = min(reynolds_numbers)
     re_max = max(reynolds_numbers)
-    multi_re = re_min != re_max
+    multi_re = (re_min != re_max) and not force_compare_mode
+
+    # In force_compare_mode, detect the actual Re for each airfoil from its
+    # records so we can embed it in the legend label.
+    _per_airfoil_re: dict = {}
+    if force_compare_mode:
+        for _name, _recs in data_dict.items():
+            for _r in _recs:
+                _rv = _r.get('Re', 0)
+                if _rv:
+                    _per_airfoil_re[_name] = _rv
+                    break
 
     data_list        = []
     coords_list      = []
@@ -735,6 +775,8 @@ def polars_compare(
                 for tool in tools:
                     filtered = _filter_records(records, re, N_crit, xtp_u, xtp_l, tool)
                     if not filtered:
+                        if force_compare_mode:
+                            continue
                         raise ValueError(
                             "No records for '%s', Re=%.2e, N_crit=%.1f, "
                             "xtp_u=%.2f, xtp_l=%.2f, source='%s'."
@@ -753,12 +795,25 @@ def polars_compare(
         coords_list      = None
         coordinatecolors = None
 
-    # Legend
+    # Legend — in force_compare_mode, embed each airfoil's actual Re in its
+    if force_compare_mode and _per_airfoil_re:
+        _leg_names = [
+            '%s  Re=%.2e' % (n, _per_airfoil_re[n]) if n in _per_airfoil_re else n
+            for n in data_dict.keys()
+        ]
+        _leg_re = [next(iter(_per_airfoil_re.values()))]
+    else:
+        _leg_names = list(data_dict.keys())
+        _leg_re = reynolds_numbers
+
     lc1, lc2, lc3 = _build_legend_cols(
-        list(data_dict.keys()), reynolds_numbers, turb_cases, tools,
+        _leg_names,
+        _leg_re,
+        turb_cases, tools,
         linecolors_by_name, is_rainbow=False, multi_re=multi_re, st=st,
+        suppress_re=force_compare_mode,
     )
-    leg = [lc1, lc2, lc3]
+    leg = [col for col in [lc1, lc2, lc3] if col]
 
     fig = polarPlot(
         data_list,
@@ -770,6 +825,129 @@ def polars_compare(
         show_cpmin=show_cpmin,
         cl_design=cl_design,
         legend_ncols=legend_ncols,
+        style=st,
+    )
+
+    if figure_path is not None:
+        fig.savefig(figure_path, dpi=st['dpi'])
+    return fig
+
+
+def tool_comparison_plot(
+    records,
+    reynolds_numbers,
+    turb_cases,
+    tools,
+    airfoil_name,
+    figure_path=None,
+    geometry=None,
+    show_cpmin=False,
+    cl_design=None,
+    style=None,
+):
+    """Per-tool comparison polar for a single airfoil.
+
+    Each tool is assigned a distinct colour from the palette; the first
+    turbulence case is plotted as a solid line (clean) and the second as a
+    dashed line (rough).
+
+    Parameters
+    ----------
+    records : list of dict
+        Run records for the airfoil (e.g. from ``_get_polar_records``).
+    reynolds_numbers : list of float
+    turb_cases : list of [N_crit, xtp_u, xtp_l]
+        One or two turbulence conditions.  Index 0 = clean (solid),
+        index 1 = rough (dashed).
+    tools : list of str
+    airfoil_name : str
+        Shown as the legend header.
+    figure_path : str or path-like or None
+        Save path; ``None`` to skip.
+    geometry : optional
+        ``Kulfan``, ``(N, 2)`` array, or ``([x], [y])`` for the shape panel.
+    show_cpmin : bool
+    cl_design : float, optional
+    style : dict, optional
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    st = dict(_DEFAULT_STYLE)
+    if style:
+        st.update(style)
+
+    palette = st['palette']
+    _LS_BY_TURB = ['-', '--', ':', '-.']
+
+    # Preserve the caller-supplied order so palette colours match the tool list.
+    sorted_tools = list(tools)
+
+    data_list    = []
+    linecolors   = []
+    linestyles   = []
+
+    for ti, tool in enumerate(sorted_tools):
+        color = palette[ti % len(palette)]
+        for ii, tc in enumerate(turb_cases):
+            N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
+            ls = _LS_BY_TURB[min(ii, len(_LS_BY_TURB) - 1)]
+            for re in reynolds_numbers:
+                filtered = _filter_records(records, re, N_crit, xtp_u, xtp_l, tool)
+                if not filtered:
+                    continue
+                data_list.append(filtered)
+                linecolors.append(color)
+                linestyles.append(ls)
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    # Col 1: airfoil name + Re number(s)
+    # Col 2: one coloured entry per tool
+    # Col 3: one entry per turbulence case (clean / rough)
+    legend_col_1 = [{'text': airfoil_name, 'linestyle': '-', 'linecolor': 'k', 'markersize': 0}]
+    seen_re: list = []
+    for re in reynolds_numbers:
+        if re not in seen_re:
+            seen_re.append(re)
+            legend_col_1.append({'text': 'Re=%.2e' % re, 'linestyle': '-',
+                                  'linecolor': 'k', 'markersize': 0})
+
+    legend_col_2 = []
+    for ti, tool in enumerate(sorted_tools):
+        color = palette[ti % len(palette)]
+        legend_col_2.append({'text': _tool_label(tool), 'linestyle': '-',
+                              'linecolor': color, 'markersize': 0})
+
+    legend_col_3 = []
+    _turb_labels = ['Clean', 'Rough']
+    for ii, tc in enumerate(turb_cases):
+        ls    = _LS_BY_TURB[min(ii, len(_LS_BY_TURB) - 1)]
+        label = _turb_labels[ii] if ii < len(_turb_labels) else f'Cond {ii}'
+        text  = (r'%s -- $N_{crit}$: %.1f, $x_{tp}$: %.2f'
+                 % (label, tc[0], tc[1]))
+        legend_col_3.append({'text': text, 'linestyle': ls,
+                              'linecolor': 'k', 'markersize': 0})
+
+    legend_entries = [legend_col_1, legend_col_2, legend_col_3]
+
+    airfoil_coords   = None
+    coordinatecolors = None
+    if geometry is not None:
+        airfoil_coords   = [_coords_from_geometry(geometry)]
+        # Use the current text color so the line is visible in both dark and
+        # light matplotlib themes (white in dark mode, black in light mode).
+        coordinatecolors = [plt.rcParams.get('text.color', 'k')]
+
+    fig = polarPlot(
+        data_list,
+        airfoil_coords=airfoil_coords,
+        legend_entries=legend_entries,
+        linecolors=linecolors,
+        linestyles=linestyles,
+        coordinatecolors=coordinatecolors,
+        show_cpmin=show_cpmin,
+        cl_design=cl_design,
         style=st,
     )
 

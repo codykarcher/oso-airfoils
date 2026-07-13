@@ -86,7 +86,8 @@ def run(mode,
         xtp_u=1.0,
         xtp_l=1.0,
         N_crit=9.0,
-        N_panels = 160,
+        N_panels_xfoil = None,
+        N_panels_kulfan = 100,
         flapLocation = None,
         flapDeflection = 0.0,
         TE_gap = 0.0,
@@ -97,7 +98,10 @@ def run(mode,
         cl_margin = 1.05,
         alpha_margin = 1.05,
         save_boundary_layer_data = False,
-        force_list = False):
+        force_list = False,
+        stdout_log_path = None,
+        exec_script_path = None,
+        airfoil_name = None):
 
     try:
         iter(val)
@@ -130,8 +134,6 @@ def run(mode,
     if os.path.exists(tempExecFile.name):
         os.remove(tempExecFile.name)
 
-    numberOfPanels = N_panels
-
     mode = mode.lower()
     if mode == 'alpha':
         mode = 'alfa'
@@ -160,14 +162,24 @@ def run(mode,
                 'cd': nan, 'cdp': nan, 'cl': nan, 'alpha': nan,
                 'cm': nan, 'cpmin': nan, 'xtr_top': nan, 'xtr_bot': nan,
                 'xtp_top': xtp_u, 'xtp_bot': xtp_l,
-                'Re': Re, 'M': M, 'N_crit': N_crit, 'N_panels': N_panels,
+                'Re': Re, 'M': M, 'N_crit': N_crit,
+                'N_panels_xfoil': N_panels_xfoil, 'N_panels_kulfan': N_panels_kulfan,
                 'cp_data': None, 'bl_data': None,
             }
     # ───────────────────────────────────────────────────────────────
 
+    if N_panels_xfoil is not None and N_panels_kulfan is not None:
+        warnings.warn(
+            f"Both N_panels_xfoil={N_panels_xfoil} and N_panels_kulfan={N_panels_kulfan} "
+            "are set.  xfoil will repanel after loading the Kulfan-generated dat file.",
+            stacklevel=2,
+        )
+
     airfoil = Kulfan(TE_gap=TE_gap)
     airfoil.upperCoefficients = upperKulfanCoefficients
     airfoil.lowerCoefficients = lowerKulfanCoefficients
+    if N_panels_kulfan is not None:
+        airfoil.utility.Npoints = N_panels_kulfan
     airfoil.write2file(tempDatfile.name)
     
     assert(os.path.isfile(tempDatfile.name))
@@ -179,10 +191,11 @@ def run(mode,
     estr += 'g\n'
     estr += '\n'
     estr += topline
-    estr += 'ppar\n'
-    estr += 'n %d\n'%(numberOfPanels)
-    estr += '\n'
-    estr += '\n'
+    if N_panels_xfoil is not None:
+        estr += 'ppar\n'
+        estr += 'n %d\n'%(N_panels_xfoil)
+        estr += '\n'
+        estr += '\n'
     if flapLocation is not None:
         ck1 = flapLocation >= 0.0
         ck2 = flapLocation <= 1.0
@@ -245,6 +258,24 @@ def run(mode,
     estr += 'n \n'
     estr += '%f \n'%(N_crit)
     estr += '\n'
+    if N_crit < 9.0:
+        # do the pre-seeding again for rough cases
+        if is_iterable:
+            if mode == 'alfa':
+                estr += "alfa %.2f \n" %(val[0])
+            if mode == 'cl':
+                if _nf_alpha_est is not None:
+                    estr += "alfa %.2f \n" %(_nf_alpha_est)
+                else:
+                    estr += "cl %.3f \n" %(val[0])
+        else:
+            if mode == 'alfa':
+                estr += "alfa %.2f \n" %(val)
+            if mode == 'cl':
+                if _nf_alpha_est is not None:
+                    estr += "alfa %.2f \n" %(_nf_alpha_est)
+                else:
+                    estr += "cl %.3f \n" %(val)
     # to include cpmin:
     estr += 'cinc\n'
     estr += 'pacc \n'
@@ -435,7 +466,8 @@ def run(mode,
         res['Re'] = Reval
         res['M'] = Mval
         res['N_crit'] = N_crit
-        res['N_panels'] = N_panels
+        res['N_panels_xfoil'] = N_panels_xfoil
+        res['N_panels_kulfan'] = N_panels_kulfan
         res['cp_data'] = cpData
         res['bl_data'] = blData
 
@@ -448,6 +480,22 @@ def run(mode,
                     os.remove(path)
             except OSError:
                 pass
+        if stdout_log_path is not None and os.path.exists(tempStdoutFile.name):
+            import shutil as _shutil
+            if os.path.isdir(stdout_log_path):
+                _name_part = f'{airfoil_name}_' if airfoil_name else ''
+                _fname = f'xfoil_stdout_{_name_part}Re{Re:.0f}_Ncrit{N_crit:.1f}_xtp{xtp_u:.2f}_{xtp_l:.2f}.txt'
+                _shutil.copy2(tempStdoutFile.name, os.path.join(stdout_log_path, _fname))
+            else:
+                _shutil.copy2(tempStdoutFile.name, stdout_log_path)
+        if exec_script_path is not None and os.path.exists(tempExecFile.name):
+            import shutil as _shutil
+            if os.path.isdir(exec_script_path):
+                _name_part = f'{airfoil_name}_' if airfoil_name else ''
+                _fname = f'xfoil_exec_{_name_part}Re{Re:.0f}_Ncrit{N_crit:.1f}_xtp{xtp_u:.2f}_{xtp_l:.2f}.txt'
+                _shutil.copy2(tempExecFile.name, os.path.join(exec_script_path, _fname))
+            else:
+                _shutil.copy2(tempExecFile.name, exec_script_path)
         for f in [tempDatfile.name, tempPolarfile.name,
                   tempStdoutFile.name, tempExecFile.name]:
             _safe_remove(f)

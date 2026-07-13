@@ -14,7 +14,7 @@ def run_sweep(solver, airfoil, cases, *, comm=None, rank=0, size=1,
 
     Parameters
     ----------
-    solver : {'xfoil', 'neuralfoil'}
+    solver : {'xfoil', 'qfoil', 'neuralfoil'}
         Which aerodynamic solver to use.
     airfoil : Kulfan
         Airfoil geometry object with ``upperCoefficients`` and
@@ -49,11 +49,14 @@ def run_sweep(solver, airfoil, cases, *, comm=None, rank=0, size=1,
     if solver == 'xfoil':
         from oso_airfoils.core.xfoil_wrapper import run as _runner
         extra_kw = dict(version=_get_xfoil_version())
+    elif solver == 'qfoil':
+        from oso_airfoils.core.qfoil_wrapper import run as _runner
+        extra_kw = {}
     elif solver == 'neuralfoil':
         from oso_airfoils.core.neuralfoil_wrapper import run as _runner
         extra_kw = {}
     else:
-        raise ValueError(f"solver must be 'xfoil' or 'neuralfoil', got '{solver}'")
+        raise ValueError(f"solver must be 'xfoil', 'qfoil', or 'neuralfoil', got '{solver}'")
 
     kw_geom = dict(
         upperKulfanCoefficients=airfoil.upperCoefficients,
@@ -79,7 +82,7 @@ def run_sweep(solver, airfoil, cases, *, comm=None, rank=0, size=1,
         xu = c.pop('xtp_u')
         xl = c.pop('xtp_l')
 
-        if solver == 'xfoil':
+        if solver in ('xfoil', 'qfoil'):
             shared = dict(**kw_geom, mode=mode, Re=Re, M=M, N_crit=Nc,
                           N_panels=np_, xtp_u=xu, xtp_l=xl,
                           save_boundary_layer_data=xfoil_bl)
@@ -135,7 +138,7 @@ if __name__ == "__main__":
         for a   in np.linspace(-5, 15, 21)
     ]
 
-    for solver in ('xfoil', 'neuralfoil'):
+    for solver in ('xfoil', 'qfoil', 'neuralfoil'):
         records = run_sweep(solver, afl, cases,
                             comm=_comm, rank=_rank, size=_size)
         if _rank == 0:

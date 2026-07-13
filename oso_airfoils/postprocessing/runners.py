@@ -28,6 +28,8 @@ from typing import Any
 
 import numpy as np
 
+from oso_airfoils.core.display_names import pretty_name as _pretty_name
+
 from oso_airfoils.core.data_utils import _DEFAULT_AFL_ROOT, _DEFAULT_PERF_ROOT
 from oso_airfoils.geometry.kulfan import Kulfan
 from oso_airfoils.postprocessing.polars import polars_compare, polars_rainbow
@@ -173,10 +175,10 @@ def _resolve_entry(entry, idx: int, afl_root) -> tuple:
         family, stem, kulfan = _resolve_spec(display_name, entry[1], afl_root)
         return display_name, family, stem, kulfan
 
-    # Plain name string
+    # Plain name string — apply pretty formatting to the display label
     if isinstance(entry, str):
         family, stem = _find_stem_in_tree(entry, afl_root)
-        return entry, family, stem, None
+        return _pretty_name(entry), family, stem, None
 
     # Kulfan or array pair — auto-name
     display_name = f'Airfoil {idx + 1}'
@@ -202,10 +204,10 @@ def _resolve_ref_entry(entry, idx: int, afl_root) -> tuple:
     Bare ``Kulfan`` or ``(arr, arr)``
         Geometry only, auto-name, color ``'k'``.
     """
-    # Plain name string
+    # Plain name string — apply pretty formatting to the display label
     if isinstance(entry, str):
         family, stem = _find_stem_in_tree(entry, afl_root)
-        return entry, family, stem, None, 'k'
+        return _pretty_name(entry), family, stem, None, 'k'
 
     # (name_str, color_str) — shorthand for named airfoil + colour
     if (isinstance(entry, (list, tuple)) and len(entry) == 2
@@ -339,15 +341,8 @@ def _iterable_to_records(raw: dict, source: str) -> list[dict]:
             'Re':                    float(raw['Re']),
             'M':                     float(raw.get('M', 0.0)),
             'N_crit':                float(raw['N_crit']),
-            'N_panels':              raw.get('N_panels'),
+            'N_panels':              raw.get('N_panels_xfoil'),
             'stagnation_index':      None,
-            'stagnation_x':          None,
-            'model':                 None,
-            'version':               None,
-            'f0':                    None,
-            'chord_to_radius_ratio': None,
-            'drag_model':            None,
-            'cp_data':               (cp_data[i] if cp_data is not None else None),
             'bl_data':               (bl_data[i] if bl_data is not None else None),
         })
     return records
@@ -370,14 +365,8 @@ def _scalar_to_record(raw: dict, source: str) -> dict:
         'Re':                    float(raw['Re']),
         'M':                     float(raw.get('M', 0.0)),
         'N_crit':                float(raw['N_crit']),
-        'N_panels':              raw.get('N_panels'),
+        'N_panels':              raw.get('N_panels_xfoil'),
         'stagnation_index':      None,
-        'stagnation_x':          None,
-        'model':                 None,
-        'version':               None,
-        'f0':                    None,
-        'chord_to_radius_ratio': None,
-        'drag_model':            None,
         'cp_data':               raw.get('cp_data'),
         'bl_data':               raw.get('bl_data'),
     }
@@ -385,9 +374,55 @@ def _scalar_to_record(raw: dict, source: str) -> dict:
 
 # ── compute helpers ───────────────────────────────────────────────────────────
 
+def _to_aseq_triplet(sweep_range) -> tuple:
+    """Convert any sweep_range to a ``(start, stop, step)`` triplet for xfoil aseq.
+
+    If the range is already a 3-element triplet it is returned as-is.
+    Otherwise the step is inferred from the explicit values:
+
+    1. If the spacing is uniform (all gaps equal within 1 % tolerance) that
+       step is used.
+    2. Otherwise the first candidate from [0.1, 0.25, 0.5, 1.0, 2.0] whose
+       grid covers every supplied value (within 1 % of the step) is used.
+    3. Falls back to 1.0 if no candidate matches.
+    """
+    import numpy as _np
+    sr = [float(v) for v in sweep_range]
+    if len(sr) == 3 and not _np.isclose(sr[0], sr[1]):
+        # Already a triplet — use as-is.
+        return (sr[0], sr[1], sr[2])
+    if len(sr) < 2:
+        return (sr[0], sr[0], 1.0)
+
+    start = min(sr)
+    stop  = max(sr)
+
+    # Check for uniform spacing.
+    diffs = _np.diff(sorted(sr))
+    if len(diffs) > 0:
+        mean_step = float(_np.mean(diffs))
+        if mean_step > 0:
+            rel_var = (float(_np.max(diffs)) - float(_np.min(diffs))) / mean_step
+            if rel_var < 0.01:
+                return (start, stop, round(mean_step, 8))
+
+    # Try candidate steps.
+    for step in [0.1, 0.25, 0.5, 1.0, 2.0]:
+        n = round((stop - start) / step) + 1
+        grid = [start + i * step for i in range(n)]
+        if all(any(abs(v - g) < step * 0.01 for g in grid) for v in sr):
+            return (start, stop, step)
+
+    return (start, stop, 1.0)
+
 def _polar_xfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
                  N_crit: float, xtp_u: float, xtp_l: float,
-                 force_explicit: bool = False) -> list[dict]:
+                 force_explicit: bool = False,
+                 timelimit: int = 60,
+                 max_iter: int = 100,
+                 stdout_log_path=None,
+                 exec_script_path=None,
+                 airfoil_name=None) -> list[dict]:
     try:
         from oso_airfoils.core import xfoil_wrapper
         raw = xfoil_wrapper.run(
@@ -395,10 +430,42 @@ def _polar_xfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
             val=list(sweep_range), Re=Re, N_crit=N_crit, xtp_u=xtp_u, xtp_l=xtp_l,
             TE_gap=float(afl.constants.TE_gap),
             force_list=force_explicit,
+            timelimit=timelimit,
+            max_iter=max_iter,
+            stdout_log_path=stdout_log_path,
+            exec_script_path=exec_script_path,
+            airfoil_name=airfoil_name,
         )
         return _iterable_to_records(raw, 'xfoil')
     except Exception as _exc:
         print(f'  [xfoil polar] failed — skipping ({_exc})')
+        return []
+
+
+def _polar_qfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
+                 N_crit: float, xtp_u: float, xtp_l: float,
+                 force_explicit: bool = False,
+                 timelimit: int = 60,
+                 max_iter: int = 100,
+                 stdout_log_path=None,
+                 exec_script_path=None,
+                 airfoil_name=None) -> list[dict]:
+    try:
+        from oso_airfoils.core import qfoil_wrapper
+        raw = qfoil_wrapper.run(
+            sweep_param, afl.upperCoefficients, afl.lowerCoefficients,
+            val=list(sweep_range), Re=Re, N_crit=N_crit, xtp_u=xtp_u, xtp_l=xtp_l,
+            TE_gap=float(afl.constants.TE_gap),
+            force_list=force_explicit,
+            timelimit=timelimit,
+            max_iter=max_iter,
+            stdout_log_path=stdout_log_path,
+            exec_script_path=exec_script_path,
+            airfoil_name=airfoil_name,
+        )
+        return _iterable_to_records(raw, 'qfoil')
+    except Exception as _exc:
+        print(f'  [qfoil polar] failed — skipping ({_exc})')
         return []
 
 
@@ -429,6 +496,22 @@ def _bl_xfoil(afl: Kulfan, mode: str, val: float, Re: float,
         return None
 
 
+def _bl_qfoil(afl: Kulfan, mode: str, val: float, Re: float,
+              N_crit: float, xtp_u: float, xtp_l: float) -> dict | None:
+    try:
+        from oso_airfoils.core import qfoil_wrapper
+        raw = qfoil_wrapper.run(
+            mode, afl.upperCoefficients, afl.lowerCoefficients,
+            val=val, Re=Re, N_crit=N_crit, xtp_u=xtp_u, xtp_l=xtp_l,
+            save_boundary_layer_data=True,
+            TE_gap=float(afl.constants.TE_gap),
+        )
+        return _scalar_to_record(raw, 'qfoil')
+    except Exception as _exc:
+        print(f'  [qfoil BL] failed — skipping ({_exc})')
+        return None
+
+
 def _bl_neuralfoil(afl: Kulfan, mode: str, val: float, Re: float,
                    N_crit: float, xtp_u: float, xtp_l: float) -> dict:
     from oso_airfoils.core import neuralfoil_wrapper
@@ -449,28 +532,82 @@ def _get_polar_records(
     sweep_param: str, sweep_range, save_data: bool,
     kulfan: 'Kulfan | None' = None,
     perf_root=None,
+    bypass_json: bool = False,
+    run_seq: bool = False,
+    timelimit: int = 60,
+    max_iter: int = 100,
+    stdout_log_path=None,
+    exec_script_path=None,
+    airfoil_name=None,
 ) -> list[dict]:
     """Return all records needed for a polar plot, computing any missing combos.
 
-    When *kulfan* is supplied:
-    - neuralfoil always recomputes (fast, no cache overhead)
-    - xfoil uses the cache when available, otherwise computes
+    When *kulfan* is supplied **or** *bypass_json* is ``True``:
+    - JSON files are not read or written
+    - neuralfoil always recomputes (fast, model-version-independent)
+    - xfoil behaviour is controlled by *run_seq*:
+      - ``run_seq=True``  → single aseq/cseq invocation (fast; needs triplet
+        sweep_range such as ``(-5, 30, 1.0)``).
+      - ``run_seq=False`` → individual per-alpha invocations (slower but
+        compatible with any sweep_range, including ``np.linspace(...)``).  
+    When only *kulfan* is supplied (and bypass_json is False) the same
+    direct-compute path is used (geometry was provided in-process).
     """
-    if kulfan is not None:
+    if kulfan is not None or bypass_json:
+        _afl = kulfan
+        if _afl is None:
+            _afl = _load_kulfan(family, stem, afl_root)
         records: list[dict] = []
+        # rfoil cannot be re-run; load from JSON cache even in bypass mode
+        if 'rfoil' in tools:
+            _existing_all = _existing_records(family, stem, perf_root)
+            records.extend([r for r in _existing_all if r.get('source') == 'rfoil'])
         for re in reynolds_numbers:
             for tc in turb_cases:
                 N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
                 for tool in tools:
                     if tool == 'neuralfoil':
-                        records.extend(_polar_neuralfoil(kulfan, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l))
+                        records.extend(_polar_neuralfoil(_afl, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l))
+                    elif tool == 'rfoil':
+                        continue  # already loaded above
                     elif tool == 'xfoil':
-                        records.extend(_polar_xfoil(kulfan, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l))
+                        if run_seq:
+                            aseq_range = _to_aseq_triplet(sweep_range)
+                            records.extend(_polar_xfoil(_afl, sweep_param, aseq_range, re, N_crit, xtp_u, xtp_l,
+                                                        timelimit=timelimit, max_iter=max_iter,
+                                                        stdout_log_path=stdout_log_path,
+                                                        exec_script_path=exec_script_path,
+                                                        airfoil_name=airfoil_name))
+                        else:
+                            all_vals = _expand_sweep_values(sweep_range)
+                            records.extend(_polar_xfoil(_afl, sweep_param, all_vals, re, N_crit, xtp_u, xtp_l,
+                                                        force_explicit=True,
+                                                        timelimit=timelimit, max_iter=max_iter,
+                                                        stdout_log_path=stdout_log_path,
+                                                        exec_script_path=exec_script_path,
+                                                        airfoil_name=airfoil_name))
+                    elif tool == 'qfoil':
+                        if run_seq:
+                            aseq_range = _to_aseq_triplet(sweep_range)
+                            records.extend(_polar_qfoil(_afl, sweep_param, aseq_range, re, N_crit, xtp_u, xtp_l,
+                                                        timelimit=timelimit, max_iter=max_iter,
+                                                        stdout_log_path=stdout_log_path,
+                                                        exec_script_path=exec_script_path,
+                                                        airfoil_name=airfoil_name))
+                        else:
+                            all_vals = _expand_sweep_values(sweep_range)
+                            records.extend(_polar_qfoil(_afl, sweep_param, all_vals, re, N_crit, xtp_u, xtp_l,
+                                                        force_explicit=True,
+                                                        timelimit=timelimit, max_iter=max_iter,
+                                                        stdout_log_path=stdout_log_path,
+                                                        exec_script_path=exec_script_path,
+                                                        airfoil_name=airfoil_name))
                     else:
                         raise ValueError(f"Unknown tool: {tool!r}")
         return records
 
     existing = _existing_records(family, stem, perf_root)
+    # rfoil records are pre-computed; they live in the JSON and need no gap-fill.
     new_xfoil_records: list[dict] = []
     fresh_nf_records:  list[dict] = []
     _afl = None  # lazy-load geometry only when a computation is required
@@ -488,7 +625,10 @@ def _get_polar_records(
                         _polar_neuralfoil(_afl, sweep_param, all_vals, re, N_crit, xtp_u, xtp_l)
                     )
 
-                elif tool == 'xfoil':
+                elif tool == 'rfoil':
+                    continue  # pre-computed; records already in `existing`
+
+                elif tool in ('xfoil', 'qfoil'):
                     # Per-alpha gap-fill from the JSON cache.
                     missing = [v for v in all_vals
                                if not _has_sweep_value(existing, sweep_param, v,
@@ -500,14 +640,20 @@ def _get_polar_records(
                         _afl = _load_kulfan(family, stem, afl_root)
 
                     print(f'  Computing {stem}  Re={re:.2e}  Ncrit={N_crit}'
-                          f'  xtp={xtp_u}/{xtp_l}  [xfoil]'
+                          f'  xtp={xtp_u}/{xtp_l}  [{tool}]'
                           f'  ({len(missing)}/{len(all_vals)} values missing)...')
-                    computed = _polar_xfoil(_afl, sweep_param, missing,
-                                           re, N_crit, xtp_u, xtp_l,
-                                           force_explicit=True)
+                    _polar_fn = _polar_qfoil if tool == 'qfoil' else _polar_xfoil
+                    computed = _polar_fn(_afl, sweep_param, missing,
+                                        re, N_crit, xtp_u, xtp_l,
+                                        force_explicit=True,
+                                        timelimit=timelimit,
+                                        max_iter=max_iter,
+                                        stdout_log_path=stdout_log_path,
+                                        exec_script_path=exec_script_path,
+                                        airfoil_name=airfoil_name)
                     if not computed:
                         print(f'  Warning: no records returned for {stem}  '
-                              f'Re={re:.2e}  Ncrit={N_crit}  xtp={xtp_u}/{xtp_l}  [xfoil]'
+                              f'Re={re:.2e}  Ncrit={N_crit}  xtp={xtp_u}/{xtp_l}  [{tool}]'
                               f' — this condition will be missing from the plot.')
                     new_xfoil_records.extend(computed)
                     existing.extend(computed)
@@ -515,11 +661,11 @@ def _get_polar_records(
                 else:
                     raise ValueError(f"Unknown tool: {tool!r}")
 
-    # Save only new xfoil records — neuralfoil is always recomputed fresh.
+    # Save only new xfoil/qfoil records — neuralfoil is always recomputed fresh.
     if save_data and new_xfoil_records:
         jf = _json_path(family, stem, perf_root)
         _append_to_json(jf, new_xfoil_records)
-        print(f'  Saved {len(new_xfoil_records)} new xfoil records -> {jf}')
+        print(f'  Saved {len(new_xfoil_records)} new records -> {jf}')
 
     # Return cached non-neuralfoil records + freshly computed neuralfoil records.
     non_nf = [r for r in existing if r.get('source') != 'neuralfoil']
@@ -546,6 +692,8 @@ def _get_bl_record(
             return _bl_neuralfoil(kulfan, mode, val, Re, N_crit, xtp_top, xtp_bot)
         elif source == 'xfoil':
             return _bl_xfoil(kulfan, mode, val, Re, N_crit, xtp_top, xtp_bot)
+        elif source == 'qfoil':
+            return _bl_qfoil(kulfan, mode, val, Re, N_crit, xtp_top, xtp_bot)
         else:
             raise ValueError(f"Unknown source: {source!r}")
 
@@ -559,6 +707,8 @@ def _get_bl_record(
           f'  Ncrit={N_crit}  [{source}]...')
     if source == 'xfoil':
         rec = _bl_xfoil(afl, mode, val, Re, N_crit, xtp_top, xtp_bot)
+    elif source == 'qfoil':
+        rec = _bl_qfoil(afl, mode, val, Re, N_crit, xtp_top, xtp_bot)
     elif source == 'neuralfoil':
         rec = _bl_neuralfoil(afl, mode, val, Re, N_crit, xtp_top, xtp_bot)
     else:
@@ -591,6 +741,14 @@ def run_and_plot_polars_compare(
     cl_design=None,
     legend_ncols=None,
     style=None,
+    bypass_json=False,
+    run_seq=False,
+    use_save_figure=False,
+    save_figure_kwargs=None,
+    timelimit=60,
+    max_iter=100,
+    stdout_log_path=None,
+    exec_script_path=None,
 ):
     """Run (if needed) and plot a polars comparison.
 
@@ -622,6 +780,33 @@ def run_and_plot_polars_compare(
         Append newly computed records to the JSON performance files.
     afl_root : path-like, optional
         Override the default airfoil root (``oso_airfoils/airfoils/``).
+    bypass_json : bool
+        When ``True``, skip reading **and** writing the JSON performance cache
+        entirely.  Results are discarded after plotting.  Use this for one-off
+        runs or quick design iterations where caching is unwanted.
+    run_seq : bool
+        When ``True`` (and *bypass_json* is ``True`` or geometry is supplied
+        in-process), xfoil runs the entire sweep in a **single** aseq/cseq
+        invocation.  *sweep_range* must be a ``(start, stop, step)`` triplet for
+        this to produce an aseq command.  When ``False`` (default), xfoil is
+        called once per alpha value (compatible with any sweep_range, including
+        ``np.linspace(...)``).
+    timelimit : int
+        Per-invocation OS-level time limit (seconds) passed to xfoil.  The
+        default is 60 s, which is generally sufficient for a full aseq sweep
+        of 35 points at a single condition.  Increase this if rough-case runs
+        (low N_crit) are terminating prematurely.
+    max_iter : int
+        Number of iterations passed to xfoil's ``iter`` command (default 100).
+        Increase (e.g. to 200-400) if rough cases (low N_crit) fail to converge.
+    use_save_figure : bool
+        When ``True``, pass the figure through
+        :func:`~oso_airfoils.postprocessing.save_figure` (generates SVG, PDF,
+        PGF, and dark-mode variants) instead of a plain ``savefig`` call.
+    save_figure_kwargs : dict, optional
+        Extra keyword arguments forwarded to ``save_figure`` (e.g.
+        ``{'dpi': 300, 'transparent': True}``).  Ignored when
+        *use_save_figure* is ``False``.
     color_override, show_cpmin, cl_design, legend_ncols, style
         Passed directly to :func:`~oso_airfoils.postprocessing.polars_compare`.
 
@@ -639,16 +824,26 @@ def run_and_plot_polars_compare(
             reynolds_numbers, turb_cases, tools, sweep_param, sweep_range, save_data,
             kulfan=_kulfan,
             perf_root=perf_root,
+            bypass_json=bypass_json,
+            run_seq=run_seq,
+            timelimit=timelimit,
+            max_iter=max_iter,
+            stdout_log_path=stdout_log_path,
+            exec_script_path=exec_script_path,
+            airfoil_name=display_name,
         )
         if load_geometry:
             geometry_dict[display_name] = _kulfan if _kulfan is not None else _load_kulfan(family, stem, afl_root)
 
-    return polars_compare(
+    # When use_save_figure is True, suppress polars_compare's own savefig call
+    # and apply save_figure (which generates dark/SVG/PDF/PGF variants) after.
+    _pc_figure_path = None if use_save_figure else figure_path
+    fig = polars_compare(
         data_dict,
         reynolds_numbers=reynolds_numbers,
         turb_cases=turb_cases,
         tools=tools,
-        figure_path=figure_path,
+        figure_path=_pc_figure_path,
         geometry_dict=geometry_dict,
         color_override=color_override,
         show_cpmin=show_cpmin,
@@ -656,6 +851,12 @@ def run_and_plot_polars_compare(
         legend_ncols=legend_ncols,
         style=style,
     )
+
+    if use_save_figure and figure_path is not None:
+        from oso_airfoils.postprocessing.save_figure import save_figure
+        save_figure(fig, figure_path, **(save_figure_kwargs or {}))
+
+    return fig
 
 
 def run_and_plot_polars_rainbow(

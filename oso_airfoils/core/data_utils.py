@@ -10,6 +10,9 @@ load_runs(family, stem, ...)
 
 find_record(family, stem, ...)
     Return the first run record matching the supplied filter conditions.
+
+polar_from_runs(runs, source, N_crit, xtp_top, xtp_bot, ...)
+    Extract a sorted polar dict (alpha, cl, cd, cm, ld) from run records.
 """
 from __future__ import annotations
 
@@ -80,7 +83,7 @@ def find_record(
     N_crit, xtp_top, xtp_bot : float, optional
         Further filter conditions (absolute tolerance *tol*).
     source : str, optional
-        Simulation source: ``'xfoil'``, ``'rfoil'``, or ``'neuralfoil'``.
+        Simulation source: ``'xfoil'``, ``'qfoil'``, ``'rfoil'``, or ``'neuralfoil'``.
     require_bl : bool
         If ``True``, skip records without ``bl_data``.
     afl_root : path-like, optional
@@ -127,3 +130,73 @@ def find_record(
     raise ValueError(
         f'No record found in {stem} matching: {", ".join(conds)}'
     )
+
+
+def polar_from_runs(
+    runs: list[dict],
+    source: str,
+    N_crit: float,
+    xtp_top: float,
+    xtp_bot: float,
+    Re: float | None = None,
+    *,
+    tol: float = 1e-3,
+) -> dict:
+    """Extract a polar from a list of run records.
+
+    Filters records by *source*, turbulence condition (N_crit, xtp_top,
+    xtp_bot), and optionally *Re*; sorts the result by alpha; and returns
+    a polar dict.
+
+    Parameters
+    ----------
+    runs : list[dict]
+        Run records as returned by :func:`load_runs`.
+    source : str
+        Tool identifier: ``'xfoil'``, ``'qfoil'``, ``'rfoil'``, or ``'neuralfoil'``.
+    N_crit : float
+        Turbulence criterion (9.0 → free-transition / clean;
+        3.0 → rough/fixed-transition typical).
+    xtp_top, xtp_bot : float
+        Transition trip positions on upper and lower surfaces
+        (1.0/1.0 = free; 0.05/0.05 = rough/fixed at 5 % chord).
+    Re : float, optional
+        Reynolds number filter.  If *None*, all Reynolds numbers in the
+        records are included (useful when only one Re is present).
+    tol : float
+        Relative tolerance for Re matching; absolute tolerance for
+        N_crit and xtp values.
+
+    Returns
+    -------
+    dict
+        Keys ``alpha``, ``cl``, ``cd``, ``cm``, ``ld`` — each a list
+        sorted by angle of attack.  Returns empty lists for all keys when
+        no matching records are found.
+    """
+    matching = []
+    for r in runs:
+        if r.get('source') != source:
+            continue
+        if abs(r.get('N_crit', 0.0) - N_crit) > tol:
+            continue
+        if abs(r.get('xtp_top', 0.0) - xtp_top) > tol:
+            continue
+        if abs(r.get('xtp_bot', 0.0) - xtp_bot) > tol:
+            continue
+        if Re is not None:
+            r_re = r.get('Re', 0.0)
+            if abs(r_re - Re) / max(abs(Re), 1.0) > tol:
+                continue
+        matching.append(r)
+
+    if not matching:
+        return {'alpha': [], 'cl': [], 'cd': [], 'cm': [], 'ld': []}
+
+    matching.sort(key=lambda r: r['alpha'])
+    alpha = [r['alpha'] for r in matching]
+    cl    = [r['cl']    for r in matching]
+    cd    = [r['cd']    for r in matching]
+    cm    = [r['cm']    for r in matching]
+    ld    = [r['cl'] / r['cd'] if r.get('cd') else float('nan') for r in matching]
+    return {'alpha': alpha, 'cl': cl, 'cd': cd, 'cm': cm, 'ld': ld}

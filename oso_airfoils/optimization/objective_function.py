@@ -6,6 +6,7 @@ import math
 import pathlib
 path_to_here = pathlib.Path(__file__).parent.resolve()
 from oso_airfoils.core.xfoil_wrapper import run as run_xfoil
+from oso_airfoils.core.qfoil_wrapper import run as run_qfoil
 from oso_airfoils.core.neuralfoil_wrapper import run as run_neuralfoil
 
 from oso_airfoils.optimization.geometry_functions import (
@@ -192,6 +193,10 @@ def core_fitness_function(x):
             path_to_XFOIL = x['params']['xfoil_path']
             tfpre = x['params']['xfoil_tempfile_path_leader']
             xfoil_timelimit  = x['params']['xfoil_timelimit']
+        elif selected_tool == 'qfoil':
+            path_to_QFOIL = x['params'].get('qfoil_path', None)
+            tfpre = x['params'].get('qfoil_tempfile_path_leader', 't_')
+            xfoil_timelimit  = x['params'].get('qfoil_timelimit', 10)
         elif selected_tool == 'neuralfoil':
             neuralfoil_model = x['params']['neuralfoil_model']
         else:
@@ -225,6 +230,8 @@ def core_fitness_function(x):
         # ----------------------
         if selected_tool == 'xfoil':
             res1 = run_xfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
+        elif selected_tool == 'qfoil':
+            res1 = run_qfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
         elif selected_tool == 'neuralfoil':
             res1 = run_neuralfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, model = neuralfoil_model)
         else:
@@ -242,6 +249,8 @@ def core_fitness_function(x):
         # ----------------------  
         if selected_tool == 'xfoil':
             res2 = run_xfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
+        elif selected_tool == 'qfoil':
+            res2 = run_qfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
         elif selected_tool == 'neuralfoil':
             res2 = run_neuralfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, model = neuralfoil_model)
         else:

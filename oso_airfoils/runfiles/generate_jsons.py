@@ -97,6 +97,13 @@ default_dict = {
     "alpha_max_rough"                            :  20,
     "alpha_step_rough"                           :  1,
     "xfoil_timelimit"                            :  15,
+    # qfoil is its own tool (separate keys from xfoil). It now runs through
+    # metafoil's in-memory Qfoil, which handles geometry directly and uses no
+    # temp files, so qfoil_path / qfoil_tempfile_path_leader are nominal
+    # (the objective reads them but the in-memory solve ignores them).
+    "qfoil_timelimit"                            :  15,
+    "qfoil_path"                                 :  None,
+    "qfoil_tempfile_path_leader"                 :  "t_",
     "neuralfoil_model"                           :  "xxlarge",
     "N_points_moi"                               :  20,
     "N_crossovers"                               :  3,
@@ -154,6 +161,9 @@ for tau in [0.15, 0.18, 0.21, 0.24, 0.27, 0.30, 0.33, 0.36]:
         rem = counter%3
         write_dict['xfoil_path'] = None #grid_paths[rem][0]
         write_dict['xfoil_tempfile_path_leader'] = "t_" #grid_paths[rem][1]
+        # metafoil runs qfoil in-memory: no external binary, no temp files.
+        write_dict['qfoil_path'] = None
+        write_dict['qfoil_tempfile_path_leader'] = "t_"
         json.dump(write_dict, f, indent=4)
     counter += 1
 
@@ -163,7 +173,9 @@ for tau in [0.15, 0.18, 0.21, 0.24, 0.27, 0.30, 0.33, 0.36]:
     # counter += 1
 
 proc_count = None
-if write_dict['tool'] == 'xfoil':
+# xfoil and qfoil now both run in-memory through metafoil (comparable cost),
+# so they get the same worker count; neuralfoil stays lighter.
+if write_dict['tool'] in ('xfoil', 'qfoil'):
     proc_count = 188
 else:
     proc_count = 96

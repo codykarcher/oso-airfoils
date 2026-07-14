@@ -3,7 +3,7 @@ import warnings
 import tempfile
 import numpy as np
 import pandas as pd
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 import os
 import sys
 import math
@@ -15,6 +15,11 @@ import string
 from datetime import datetime
 path_to_here = pathlib.Path(__file__).parent.resolve()
 import platform
+
+# metafoil's in-memory Qfoil (libqfoil.so via f2py) — the default solve path.
+# The file-I/O path below (_run_fileio) is kept only as a fallback for the
+# features metafoil's in-memory solver does not implement (CL mode, Cp dumps).
+import metafoil.qfoil as _metafoil_qfoil
 
 class FNM(object):
     def __init__(self,ldr,N=5):
@@ -77,10 +82,10 @@ def _nf_cl_check(target_cl, upperKulfanCoefficients, lowerKulfanCoefficients,
     idx = int(np.argmin(np.abs(diff)))
     return float(alpha_coarse[idx]), achievable, cl_max_nf
 
-def run(mode, 
+def _run_fileio(mode,
         upperKulfanCoefficients,
         lowerKulfanCoefficients,
-        val = 0.0, 
+        val = 0.0,
         Re = 1e7,
         M = 0.0,
         xtp_u=1.0,
@@ -511,6 +516,88 @@ def run(mode,
             if arr:
                 for f in arr:
                     _safe_remove(f)
+
+def run(mode,
+        upperKulfanCoefficients,
+        lowerKulfanCoefficients,
+        val=0.0,
+        Re=1e7,
+        M=0.0,
+        xtp_u=1.0,
+        xtp_l=1.0,
+        N_crit=9.0,
+        N_panels_qfoil=None,
+        N_panels_kulfan=100,
+        N_panels=None,
+        flapLocation=None,
+        flapDeflection=0.0,
+        TE_gap=0.0,
+        timelimit=10,
+        max_iter=100,
+        path_to_QFOIL=None,
+        tfpre=None,
+        cl_margin=1.05,
+        alpha_margin=1.05,
+        save_boundary_layer_data=False,
+        force_list=False,
+        stdout_log_path=None,
+        exec_script_path=None,
+        airfoil_name=None,
+        version=None,
+        **kwargs):
+    """
+    Run Qfoil (RFOIL) for a Kulfan airfoil.
+
+    Alpha mode is served by metafoil's in-memory Qfoil (libqfoil.so) — no temp
+    files, results validated against the qfoil CLI.  The signature and return
+    contract are unchanged, so every existing call site is unaffected.
+
+    CL mode, Cp-distribution dumps, and flap deflections are not implemented
+    in the in-memory solver; those fall back to the file-I/O path
+    (:func:`_run_fileio`, which drives the qfoil binary via temp files).
+
+    ``N_panels`` is accepted as an alias for ``N_panels_kulfan`` (the name
+    core.sweep passes); ``version`` and any other unknown kwargs are absorbed.
+    """
+    if N_panels is not None:
+        N_panels_kulfan = N_panels
+
+    m = mode.lower()
+    if m == 'alfa':
+        m = 'alpha'
+
+    _needs_fileio = (m == 'cl'
+                     or flapLocation is not None
+                     or path_to_QFOIL is not None)
+
+    if _needs_fileio:
+        res = _run_fileio(
+            mode, upperKulfanCoefficients, lowerKulfanCoefficients,
+            val=val, Re=Re, M=M, xtp_u=xtp_u, xtp_l=xtp_l, N_crit=N_crit,
+            N_panels_qfoil=N_panels_qfoil, N_panels_kulfan=N_panels_kulfan,
+            flapLocation=flapLocation, flapDeflection=flapDeflection,
+            TE_gap=TE_gap, timelimit=timelimit, max_iter=max_iter,
+            path_to_QFOIL=path_to_QFOIL, tfpre=tfpre,
+            cl_margin=cl_margin, alpha_margin=alpha_margin,
+            save_boundary_layer_data=save_boundary_layer_data,
+            force_list=force_list, stdout_log_path=stdout_log_path,
+            exec_script_path=exec_script_path, airfoil_name=airfoil_name,
+        )
+    else:
+        res = _metafoil_qfoil.run_from_kulfan(
+            'alpha', upperKulfanCoefficients, lowerKulfanCoefficients,
+            val=val, N_panels_kulfan=N_panels_kulfan, TE_gap=TE_gap,
+            Re=Re, M=M, xtp_u=xtp_u, xtp_l=xtp_l, N_crit=N_crit,
+            max_iter=max_iter,
+            save_boundary_layer_data=save_boundary_layer_data,
+            force_list=force_list,
+        )
+
+    res.setdefault('N_panels_kulfan', N_panels_kulfan)
+    res['N_panels'] = res.get('N_panels_kulfan', N_panels_kulfan)
+    res.setdefault('N_panels_qfoil', N_panels_qfoil)
+    return res
+
 
 if __name__ == '__main__':
     res = run('alpha',[0.2,0.2],[-0.2,-0.2],0, save_boundary_layer_data=True)

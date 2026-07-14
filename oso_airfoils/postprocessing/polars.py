@@ -50,7 +50,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import MultipleLocator
 from oso_airfoils.core.colors import default_color_cycle as dcc
 
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 plt.rcParams['text.usetex'] = True
 plt.rcParams.update({'font.size': 15})

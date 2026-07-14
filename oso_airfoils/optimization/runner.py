@@ -5,7 +5,7 @@ import shutil
 from oso_airfoils.optimization.objective_function import airfoil_fitness
 # from ga_new_generation_mpi_nsga2 import newGeneration
 from oso_airfoils.optimization.new_generation import newGeneration
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 import numpy as np
 import time
 import os

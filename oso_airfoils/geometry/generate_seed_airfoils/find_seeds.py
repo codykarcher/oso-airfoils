@@ -9,7 +9,7 @@ comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 def cprint(x):
     sys.stdout.flush()

@@ -4,7 +4,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from oso_airfoils.core.colors import default_color_cycle as dcc
 matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=dcc)
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 import pathlib
 path_to_here = pathlib.Path(__file__).parent.resolve()
 path_to_oso = path_to_here.parent.parent.parent

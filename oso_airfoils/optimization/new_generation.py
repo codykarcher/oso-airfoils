@@ -36,7 +36,7 @@ import random
 import sys
 import numpy as np
 import math
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 def cprint(x):
     sys.stdout.flush()

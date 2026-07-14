@@ -1,6 +1,6 @@
 import os
 import pathlib
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 
 def get_geometry_from_dir(name, datfiles_dir, family_name='', strict=False,

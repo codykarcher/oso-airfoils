@@ -30,7 +30,7 @@ import natsort
 import numpy as np
 
 from oso_airfoils.core.data_utils import _DEFAULT_AFL_ROOT, _DEFAULT_PERF_ROOT
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 from oso_airfoils.postprocessing.runners import run_and_plot_polars_rainbow
 
 # ── Tunable parameters ────────────────────────────────────────────────────────

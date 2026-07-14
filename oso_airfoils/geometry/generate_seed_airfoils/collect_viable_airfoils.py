@@ -1,4 +1,4 @@
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 import os
 import numpy as np
 import json

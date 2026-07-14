@@ -25,7 +25,7 @@ _HERE   = pathlib.Path(__file__).resolve().parent
 _PROJ   = _HERE.parent.parent          # …/oso-airfoils
 sys.path.insert(0, str(_PROJ))
 
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 # ── configuration ─────────────────────────────────────────────────────────────
 CASE_DIR       = _PROJ / 'oso_airfoils' / 'data' / 'cases_111_to_120' / 'case_116'

@@ -1,5 +1,5 @@
 import random
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 possible_members = [
 [ 0.103735, 0.360173, 0.369062, 0.072491, 0.438968, 0.437587, 0.212410, 0.376898,-0.282457,-0.341069,-0.273117,-0.371314,-0.407349,-0.225634,-0.427255, 0.094178],

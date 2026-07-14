@@ -45,7 +45,7 @@ import numpy as np
 
 from oso_airfoils.core.colors import default_color_cycle as dcc
 from oso_airfoils.core.data_utils import _DEFAULT_AFL_ROOT, _DEFAULT_PERF_ROOT
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 from oso_airfoils.postprocessing.runners import _get_bl_record, _resolve_entry, _load_kulfan
 from oso_airfoils.postprocessing.polars import computeNormals
 from oso_airfoils.postprocessing.oso_polar import _FAMILY_ALIASES

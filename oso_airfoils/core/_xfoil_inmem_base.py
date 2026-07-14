@@ -43,7 +43,7 @@ def _kulfan_to_xy(upper_coeffs, lower_coeffs, n_pts: int = 100,
     Returns a (N, 2) float64 array of airfoil coordinates in the same
     format as Kulfan.coordinates (upper surface TE→LE→ lower surface TE).
     """
-    from oso_airfoils.geometry.kulfan import Kulfan  # lazy import
+    from metafoil.core.kulfan import Kulfan  # lazy import
     afl = Kulfan(TE_gap=te_gap)
     afl.upperCoefficients = upper_coeffs
     afl.lowerCoefficients = lower_coeffs

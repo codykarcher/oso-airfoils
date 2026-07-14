@@ -117,7 +117,7 @@ def run_sweep(solver, airfoil, cases, *, comm=None, rank=0, size=1,
 
 if __name__ == "__main__":
     import numpy as np
-    from oso_airfoils.geometry.kulfan import Kulfan
+    from metafoil.core.kulfan import Kulfan
 
     try:
         from mpi4py import MPI

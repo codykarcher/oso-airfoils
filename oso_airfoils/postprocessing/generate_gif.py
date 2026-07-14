@@ -23,7 +23,7 @@ import numpy as np
 import natsort
 from PIL import Image
 
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 from mpi4py import MPI
 comm = MPI.COMM_WORLD

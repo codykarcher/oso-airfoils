@@ -40,7 +40,7 @@ def _extract(val):
 
 def make_geometry_record(airfoil, kulfan_order):
     """Build the geometry dict for one airfoil at the requested Kulfan order."""
-    from oso_airfoils.geometry.kulfan import units
+    from pint import UnitRegistry; units = UnitRegistry()
     airfoil.chord = 1.0 * units.m          # required for dimensioned properties
 
     ler = airfoil.leadingEdgeRadius()       # [upper, lower], dimensionless
@@ -49,19 +49,19 @@ def make_geometry_record(airfoil, kulfan_order):
         'upperCoefficients': _extract(airfoil.upperCoefficients),
         'lowerCoefficients': _extract(airfoil.lowerCoefficients),
         'TE_gap':            float(airfoil.constants.TE_gap),
-        'area':              float(airfoil.area.to('m**2').magnitude),
-        'perimeter':         float(airfoil.perimeter.to('m').magnitude),
-        'Ixx':               float(airfoil.Ixx.to('m**4').magnitude),
-        'Iyy':               float(airfoil.Iyy.to('m**4').magnitude),
-        'Izz':               float(airfoil.Izz.to('m**4').magnitude),
+        'area':              float(airfoil.area),
+        'perimeter':         float(airfoil.perimeter),
+        'Ixx':               float(airfoil.Ixx),
+        'Iyy':               float(airfoil.Iyy),
+        'Izz':               float(airfoil.Izz),
         'LE_radius_upper':   float(ler[0]),
         'LE_radius_lower':   float(ler[1]),
-        'tau':               float(airfoil.tau.to('').magnitude),
-        'x_centroid':        float(airfoil.xcentroid.to('m').magnitude),
-        'y_centroid':        float(airfoil.ycentroid.to('m').magnitude),
-        'taumax_psi':        float(airfoil.taumax_psi.to('').magnitude),
-        'taumax_psi_upper':  float(airfoil.taumax_psi_upper.to('').magnitude),
-        'taumax_psi_lower':  float(airfoil.taumax_psi_lower.to('').magnitude),
+        'tau':               float(airfoil.tau),
+        'x_centroid':        float(airfoil.xcentroid),
+        'y_centroid':        float(airfoil.ycentroid),
+        'taumax_psi':        float(airfoil.taumax_psi),
+        'taumax_psi_upper':  float(airfoil.taumax_psi_upper),
+        'taumax_psi_lower':  float(airfoil.taumax_psi_lower),
     }
 
 

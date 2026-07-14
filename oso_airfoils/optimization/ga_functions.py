@@ -3,7 +3,7 @@ import random
 import numpy as np
 import multiprocessing
 import math
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 
 def numberCoding(val, mode, base = 'binary', nbe=8, nbm=23, encodeType=None, encodeLength=None):
     if base == 'binary':

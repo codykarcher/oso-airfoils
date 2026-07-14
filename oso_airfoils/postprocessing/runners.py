@@ -31,7 +31,7 @@ import numpy as np
 from oso_airfoils.core.display_names import pretty_name as _pretty_name
 
 from oso_airfoils.core.data_utils import _DEFAULT_AFL_ROOT, _DEFAULT_PERF_ROOT
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 from oso_airfoils.postprocessing.polars import polars_compare, polars_rainbow
 from oso_airfoils.postprocessing.boundary_layer import (
     boundary_layer_compare,
@@ -209,12 +209,14 @@ def _resolve_ref_entry(entry, idx: int, afl_root) -> tuple:
         family, stem = _find_stem_in_tree(entry, afl_root)
         return _pretty_name(entry), family, stem, None, 'k'
 
-    # (name_str, color_str) — shorthand for named airfoil + colour
+    # (name_str, color_str) — shorthand for named airfoil + colour. This is a
+    # name lookup just like the plain-string case above, so apply the same
+    # pretty formatting to the legend label (osopolar -c passes (stem, 'k')).
     if (isinstance(entry, (list, tuple)) and len(entry) == 2
             and isinstance(entry[0], str) and isinstance(entry[1], str)):
         name, color = entry[0], entry[1]
         family, stem = _find_stem_in_tree(name, afl_root)
-        return name, family, stem, None, color
+        return _pretty_name(name), family, stem, None, color
 
     # [name_str, geometry] or [name_str, geometry, color_str]
     if (isinstance(entry, (list, tuple)) and len(entry) in (2, 3)

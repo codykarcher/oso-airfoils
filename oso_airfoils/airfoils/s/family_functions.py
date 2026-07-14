@@ -101,7 +101,7 @@ def get_coordinates(name=None):
 
 def _plot_s_group(group):
     """Plot one S-series group, ordered thinnest to thickest, with (xx%) labels."""
-    from oso_airfoils.geometry.kulfan import Kulfan
+    from metafoil.core.kulfan import Kulfan
     entries = []
     for key in group['keys']:
         fl = key.lower() + '.dat'

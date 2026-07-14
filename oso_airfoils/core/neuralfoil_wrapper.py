@@ -3,7 +3,7 @@ import warnings
 import tempfile
 import numpy as np
 import pandas as pd
-from oso_airfoils.geometry.kulfan import Kulfan
+from metafoil.core.kulfan import Kulfan
 import os
 import sys
 import math

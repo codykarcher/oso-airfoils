@@ -1,5 +1,7 @@
 import numpy as np
-from oso_airfoils.geometry.kulfan import Kulfan, units
+from metafoil.core.kulfan import Kulfan
+from pint import UnitRegistry
+units = UnitRegistry()
 import copy
 import math
 
@@ -19,6 +21,26 @@ from oso_airfoils.optimization.geometry_functions import (
     ler_function,
     min_radius_location_upper_function,
     min_radius_location_lower_function)
+
+
+def _drop_unconverged(cl, cd, cm, cpmin, alpha):
+    """Keep only the converged points of a polar sweep.
+
+    metafoil's in-memory xfoil/qfoil sweep returns NaN cl/cd for the alphas
+    that did not converge (the old file-I/O xfoil simply omitted them from the
+    polar). A non-converged sweep point is expected and fine, but it must not
+    leak into the design-point interpolations downstream (np.interp through a
+    NaN yields NaN, which would then poison a final reported value and get the
+    whole design rejected). Dropping them here restores the old "converged
+    points only" polar. Arrays stay mutually aligned; returns lists.
+    """
+    cl = np.atleast_1d(np.asarray(cl, dtype=float))
+    cd = np.atleast_1d(np.asarray(cd, dtype=float))
+    cm = np.atleast_1d(np.asarray(cm, dtype=float))
+    cpmin = np.atleast_1d(np.asarray(cpmin, dtype=float))
+    alpha = np.atleast_1d(np.asarray(alpha, dtype=float))
+    m = np.isfinite(cl) & np.isfinite(cd) & np.isfinite(alpha)
+    return list(cl[m]), list(cd[m]), list(cm[m]), list(cpmin[m]), list(alpha[m])
 
 
 def airfoil_fitness(x):
@@ -185,13 +207,12 @@ def core_fitness_function(x):
         xtp_l_clean      = x['params']['xtp_l_clean']
         xtp_u_rough      = x['params']['xtp_u_rough']
         xtp_l_rough      = x['params']['xtp_l_rough']
-        N_points_moi     = x['params']['N_points_moi']
 
         selected_tool = x['params']['tool']
 
         if selected_tool == 'xfoil':
-            path_to_XFOIL = x['params']['xfoil_path']
-            tfpre = x['params']['xfoil_tempfile_path_leader']
+            path_to_XFOIL = x['params'].get('xfoil_path', None)
+            tfpre = x['params'].get('xfoil_tempfile_path_leader', 't_')
             xfoil_timelimit  = x['params']['xfoil_timelimit']
         elif selected_tool == 'qfoil':
             path_to_QFOIL = x['params'].get('qfoil_path', None)
@@ -237,12 +258,11 @@ def core_fitness_function(x):
         else:
             raise RuntimeError('Invalid tool selection')              
 
-        cl_clean    = res1['cl']
-        cd_clean    = res1['cd']
-        cm_clean    = res1['cm']
-        cpmin_clean = res1['cpmin']
-        alpha_clean = res1['alpha']
-        LoD_clean   = [cl_clean[i]/cd_clean[i] for i in range(0,len(cl_clean))] 
+        # Drop non-converged sweep points (NaN cl/cd) so they can't poison the
+        # design-point interpolations below — see _drop_unconverged.
+        cl_clean, cd_clean, cm_clean, cpmin_clean, alpha_clean = _drop_unconverged(
+            res1['cl'], res1['cd'], res1['cm'], res1['cpmin'], res1['alpha'])
+        LoD_clean   = [cl_clean[i]/cd_clean[i] for i in range(0,len(cl_clean))]
 
         # ----------------------
         # Run Rough Data
@@ -259,12 +279,9 @@ def core_fitness_function(x):
         if res2 is None:
             raise RuntimeError("Xfoil failed")                
 
-        cl_rough    = res2['cl']
-        cd_rough    = res2['cd']
-        cm_rough    = res2['cm']
-        cpmin_rough = res2['cpmin']
-        alpha_rough = res2['alpha']
-        LoD_rough   = [cl_rough[i]/cd_rough[i] for i in range(0,len(cl_rough))] 
+        cl_rough, cd_rough, cm_rough, cpmin_rough, alpha_rough = _drop_unconverged(
+            res2['cl'], res2['cd'], res2['cm'], res2['cpmin'], res2['alpha'])
+        LoD_rough   = [cl_rough[i]/cd_rough[i] for i in range(0,len(cl_rough))]
         
         # ----------------------
         # Find the stall locations
@@ -442,12 +459,12 @@ def core_fitness_function(x):
         # ----------------------
         # structure surrogates
         # ----------------------
-        moi_afl = copy.deepcopy(afl_geo)
-        moi_afl.utility.Npoints = N_points_moi
-        Ixx = moi_afl.Ixx.magnitude
-        Iyy = moi_afl.Iyy.magnitude
-        Izz = moi_afl.Izz.magnitude
-        A   = moi_afl.area.magnitude
+        # metafoil's Kulfan returns plain (chord-normalized) floats, not pint
+        # quantities, so these are already magnitudes.
+        Ixx = afl_geo.Ixx
+        Iyy = afl_geo.Iyy
+        Izz = afl_geo.Izz
+        A   = afl_geo.area
         
         Ixx_target = Ixx_con 
         Iyy_target = Iyy_con 
@@ -583,12 +600,14 @@ def core_fitness_function(x):
         # ----------------------
         # Penalize upper surface concavity (positive curvature)
         # ----------------------
-        delta_zeta_upper = afl_geo.zetaUpper[1:] - afl_geo.zetaUpper[0:-1]
-        delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
-        first_derivative_approx = (delta_zeta_upper / delta_psi)
-        delta_first_derivative = first_derivative_approx[1:] - first_derivative_approx[0:-1]
-        delta_delta_psi = delta_psi[1:] - delta_psi[0:-1]
-        second_derivative_approx = delta_first_derivative/delta_delta_psi
+        # Upper-surface curvature = the exact analytic d2(zeta)/dpsi2 (metafoil
+        # Kulfan.d2zeta_dpsi2), evaluated on the interior psi grid. This replaces
+        # the old grid finite difference  Delta(dzeta/dpsi) / Delta(Delta psi),
+        # which divided by the *change* in grid spacing and so blew up ~1e3-1e4x
+        # near the trailing edge (a pure grid artifact, not a real curvature).
+        # The closed form is grid-independent, so curvature_bound now means the
+        # same thing on any grid.
+        second_derivative_approx = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'upper'))
         positive_curvature = []
         for i in range(0, len(second_derivative_approx)):
             if second_derivative_approx[i] >0:
@@ -616,12 +635,8 @@ def core_fitness_function(x):
         # ----------------------
         # Penalize lower surface curvature changes if it happens more than once
         # ----------------------
-        delta_zeta_lower = afl_geo.zetaLower[1:] - afl_geo.zetaLower[0:-1]
-        delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
-        first_derivative_approx_l = (delta_zeta_lower / delta_psi)
-        delta_first_derivative_l = first_derivative_approx_l[1:] - first_derivative_approx_l[0:-1]
-        delta_delta_psi = delta_psi[1:] - delta_psi[0:-1]
-        second_derivative_approx_l = delta_first_derivative_l/delta_delta_psi
+        # Lower-surface curvature = analytic d2(zeta)/dpsi2 (see upper-surface note).
+        second_derivative_approx_l = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'lower'))
         sflips = 0
         sgn = second_derivative_approx_l[0]/abs(second_derivative_approx_l[0])
         for i in range(0, len(second_derivative_approx_l)):
@@ -770,9 +785,8 @@ def core_fitness_function(x):
         delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
         first_derivative_approx = (delta_zeta_upper / delta_psi)
         first_derivative_average = (first_derivative_approx[1:] + first_derivative_approx[0:-1]) / 2.0
-        delta_first_derivative = first_derivative_approx[1:] - first_derivative_approx[0:-1]
-        delta_delta_psi = delta_psi[1:] - delta_psi[0:-1]
-        second_derivative_approx = delta_first_derivative/delta_delta_psi
+        # analytic second derivative (grid-independent; see upper-surface note above)
+        second_derivative_approx = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'upper'))
         radius_of_curvature_approx =  (1+first_derivative_average**2)**1.5 / abs(second_derivative_approx)
         chopped_roc = radius_of_curvature_approx[afl_geo.psi[1:-1] <= min_radius_location_cutoff]
         computed_min_radius_loc_upper = afl_geo.psi[1:-1][afl_geo.psi[1:-1] <= min_radius_location_cutoff][np.argmin(chopped_roc)]
@@ -786,9 +800,8 @@ def core_fitness_function(x):
         delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
         first_derivative_approx = (delta_zeta_lower / delta_psi)
         first_derivative_average = (first_derivative_approx[1:] + first_derivative_approx[0:-1]) / 2.0
-        delta_first_derivative = first_derivative_approx[1:] - first_derivative_approx[0:-1]
-        delta_delta_psi = delta_psi[1:] - delta_psi[0:-1]
-        second_derivative_approx = delta_first_derivative/delta_delta_psi
+        # analytic second derivative (grid-independent; see upper-surface note above)
+        second_derivative_approx = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'lower'))
         radius_of_curvature_approx =  (1+first_derivative_average**2)**1.5 / abs(second_derivative_approx)
         chopped_roc = radius_of_curvature_approx[afl_geo.psi[1:-1] <= min_radius_location_cutoff]
         computed_min_radius_loc_lower = afl_geo.psi[1:-1][afl_geo.psi[1:-1] <= min_radius_location_cutoff][np.argmin(chopped_roc)]
@@ -836,8 +849,8 @@ def core_fitness_function(x):
                 delta_cl_clean_to_rough_at_alpha_design,
                 LoD_clean_1degree_left,
                 LoD_clean_1degree_right,
-                afl_geo.tau.magnitude,
-                leading_edge_radius_upper, 
+                afl_geo.tau,
+                leading_edge_radius_upper,
                 leading_edge_radius_lower,
                 Ixx,
                 Iyy,
@@ -851,8 +864,18 @@ def core_fitness_function(x):
                 assert(rtv.units == units.dimensionless)
                 r_list[rix] = rtv.to('dimensionless').magnitude
 
+        # NSGA_sort decides dominance with `>` and `<`, and both are False
+        # against NaN, so a NaN individual is never dominated and lands in
+        # front 1. Reject the design outright instead.
+        # Reject the design only if one of the FINAL reported/constraint values
+        # (the ones written to the JSON) is NaN — a non-converged sweep point on
+        # its own is fine and was already filtered out above.
+        if any(np.isnan(rtv) for rtv in r_list if isinstance(rtv, (float, np.floating))):
+            return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
+
         return r_list
     except:
+        return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
         return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
 
 

@@ -121,6 +121,7 @@ xtp_l_rough                               : 0.05
 alpha_min_rough                           : 0
 alpha_max_rough                           : 20
 alpha_step_rough                          : 1
+alpha_min_extend                          : -10
 
 # GA params
 N_crossovers                              : 3

@@ -121,6 +121,7 @@ xtp_l_rough                                  : 0.05
 alpha_min_rough                              : 0
 alpha_max_rough                              : 20
 alpha_step_rough                             : 1
+alpha_min_extend                             : -10
 
 # GA params
 N_crossovers                                 : 3
@@ -128,5 +129,13 @@ probability_of_mutation                      : 0.3
 maximum_parent_fraction                      : 0.3
 front1_cap_fraction                          : 0.5
 N_mutations                                  : 4
+
+# Mutation operator.
+#   legacy    : the operator used for all OSO runs published to date. It contains a
+#               for/else defect (ga_functions.mutateChromosome) that makes it SET bits
+#               rather than flip them, so it can never clear a bit. Kept available so
+#               those runs remain reproducible.
+#   corrected : a true bit flip. Use for all new work.
+mutation_mode                                : "corrected"
 
 

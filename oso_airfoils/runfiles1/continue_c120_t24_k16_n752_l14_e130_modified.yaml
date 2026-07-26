@@ -2,7 +2,7 @@
 case_number                               : 120
 N_k                                       : 16
 N_pop                                     : 752
-N_generations                             : 500
+N_generations                             : 236   # MODIFIED CONTINUATION: added to seed current_generation (264) -> total 500, loop runs to g599
 CL                                        : 1.4
 Re                                        : 13000000.0
 
@@ -28,8 +28,8 @@ ler_con_upper                             : 0.025
 ler_con_lower                             : 0.025
 cone_angle                                : 5.0
 # Correction for thick airfoils
-target_cl                                 : 1.5
-target_alpha                              : 10.0
+target_cl                                 : null
+target_alpha                              : null
 
 # Performance parameters
 CMc_min                                   : null
@@ -40,7 +40,7 @@ percent_delta_cl_from_roughness_threshold : 0.10
 percent_LoD_falloff_threshold             : 0.15
 
 # Tool Parameters 
-tool                                      : "neuralfoil"
+tool                                      : "qfoil"
 xfoil_timelimit                           : 15
 qfoil_timelimit                           : 20
 outfile_leader                            : "./"
@@ -50,7 +50,7 @@ neuralfoil_model                          : "xxxlarge"
 # Unlikely to change
 # ------------------
 # Fundamental parameters
-continuation_file                         : null
+continuation_file                         : "/mnt/c/Users/Cody Karcher/Dropbox/research/oso-airfoils/oso_airfoils/runfiles1/c120_t24_k16_n752_l14_e130__2026_07_14_02-10-1811_modified/population_c120_t24_k16_n752_l14_e130_g264.json"
 continuation_file_overwrite               : false
 
 # Geometry Parameters
@@ -126,7 +126,7 @@ alpha_min_extend                          : -10
 # GA params
 N_crossovers                              : 3
 probability_of_mutation                   : 0.3
-maximum_parent_fraction                   : 0.3
+maximum_parent_fraction                   : 0.7   # raised from 0.3 (diversity/elitism); NOTE: continuation reads this from the SEED json, not here
 front1_cap_fraction                       : 0.5
 N_mutations                               : 4
 

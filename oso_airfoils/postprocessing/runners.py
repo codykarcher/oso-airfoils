@@ -472,12 +472,13 @@ def _polar_qfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
 
 
 def _polar_neuralfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
-                      N_crit: float, xtp_u: float, xtp_l: float) -> list[dict]:
+                      N_crit: float, xtp_u: float, xtp_l: float,
+                      neuralfoil_model: str = 'xxxlarge') -> list[dict]:
     from oso_airfoils.core import neuralfoil_wrapper
     raw = neuralfoil_wrapper.run(
         sweep_param, afl.upperCoefficients, afl.lowerCoefficients,
         val=list(sweep_range), Re=Re, N_crit=N_crit, xtp_u=xtp_u, xtp_l=xtp_l,
-        TE_gap=float(afl.constants.TE_gap),
+        TE_gap=float(afl.constants.TE_gap), model=neuralfoil_model,
     )
     return _iterable_to_records(raw, 'neuralfoil')
 
@@ -541,6 +542,7 @@ def _get_polar_records(
     stdout_log_path=None,
     exec_script_path=None,
     airfoil_name=None,
+    neuralfoil_model: str = 'xxxlarge',
 ) -> list[dict]:
     """Return all records needed for a polar plot, computing any missing combos.
 
@@ -569,7 +571,7 @@ def _get_polar_records(
                 N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
                 for tool in tools:
                     if tool == 'neuralfoil':
-                        records.extend(_polar_neuralfoil(_afl, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l))
+                        records.extend(_polar_neuralfoil(_afl, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l, neuralfoil_model))
                     elif tool == 'rfoil':
                         continue  # already loaded above
                     elif tool == 'xfoil':
@@ -624,7 +626,7 @@ def _get_polar_records(
                     if _afl is None:
                         _afl = _load_kulfan(family, stem, afl_root)
                     fresh_nf_records.extend(
-                        _polar_neuralfoil(_afl, sweep_param, all_vals, re, N_crit, xtp_u, xtp_l)
+                        _polar_neuralfoil(_afl, sweep_param, all_vals, re, N_crit, xtp_u, xtp_l, neuralfoil_model)
                     )
 
                 elif tool == 'rfoil':
@@ -743,6 +745,7 @@ def run_and_plot_polars_compare(
     cl_design=None,
     legend_ncols=None,
     style=None,
+    neuralfoil_model='xxxlarge',
     bypass_json=False,
     run_seq=False,
     use_save_figure=False,
@@ -833,6 +836,7 @@ def run_and_plot_polars_compare(
             stdout_log_path=stdout_log_path,
             exec_script_path=exec_script_path,
             airfoil_name=display_name,
+            neuralfoil_model=neuralfoil_model,
         )
         if load_geometry:
             geometry_dict[display_name] = _kulfan if _kulfan is not None else _load_kulfan(family, stem, afl_root)
@@ -879,6 +883,7 @@ def run_and_plot_polars_rainbow(
     cl_design=None,
     legend_ncols=None,
     style=None,
+    neuralfoil_model='xxxlarge',
 ):
     """Run (if needed) and plot a polars rainbow.
 
@@ -904,6 +909,7 @@ def run_and_plot_polars_rainbow(
             reynolds_numbers, turb_cases, tools, sweep_param, sweep_range, save_data,
             kulfan=_kulfan,
             perf_root=perf_root,
+            neuralfoil_model=neuralfoil_model,
         )
         if load_geometry:
             geometry_dict[display_name] = _kulfan if _kulfan is not None else _load_kulfan(family, stem, afl_root)
@@ -918,6 +924,7 @@ def run_and_plot_polars_rainbow(
                 reynolds_numbers, turb_cases, tools, sweep_param, sweep_range, save_data,
                 kulfan=_kulfan,
                 perf_root=perf_root,
+                neuralfoil_model=neuralfoil_model,
             )
             ref_entry = {'records': records, 'color': color}
             if load_geometry:

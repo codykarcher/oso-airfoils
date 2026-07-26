@@ -804,7 +804,7 @@ def main() -> None:
 
     # Polar-specific
     parser.add_argument('-t', '--tool', default='xfoil',
-        choices=['neuralfoil', 'xfoil'],
+        choices=['neuralfoil', 'xfoil', 'qfoil'],
         help='Aerodynamic solver for polar (default: xfoil).')
     parser.add_argument('-n', '--n-airfoils', type=int, default=N_BEST_AIRFOILS,
         dest='n_airfoils',

@@ -37,8 +37,11 @@ from oso_airfoils.postprocessing.runners import run_and_plot_polars_rainbow
 N_PARETO_AIRFOILS  = 21        # 0.00 → 1.00 in steps of 0.05
 TAU_MATCH_TOL      = 0.015     # max |tau_ref - tau_run| for a family match
 
-# Alpha sweep used when polars are not already cached
-ALPHA_RANGE        = (-5, 30, 0.25)  # (start, stop, step) in degrees
+# Alpha sweep used when polars are not already cached: (start, stop) in degrees,
+# plus a per-tool default step. neuralfoil is cheap so it uses a fine step;
+# xfoil/qfoil use a coarser one. Override the step with -a / --alpha-step.
+ALPHA_BOUNDS       = (-5, 30)
+ALPHA_STEP_DEFAULT = {'neuralfoil': 0.25, 'xfoil': 0.25, 'qfoil': 0.25}
 
 # Turbulence / transition conditions   [N_crit, xtp_upper, xtp_lower]
 TURB_CASES_CLEAN   = [[9.0, 1.0,  1.0 ]]
@@ -156,8 +159,15 @@ def main():
     parser.add_argument(
         '-t', '--tool',
         default='neuralfoil',
-        choices=['neuralfoil', 'xfoil'],
+        choices=['neuralfoil', 'xfoil', 'qfoil'],
         help='Aerodynamic solver (default: neuralfoil).',
+    )
+    parser.add_argument(
+        '-a', '--alpha-step',
+        type=float,
+        default=None,
+        dest='alpha_step',
+        help='Alpha sweep step [deg] (default: 0.25 for all tools).',
     )
     parser.add_argument(
         '-c', '--compare',
@@ -190,7 +200,9 @@ def main():
 
     tools       = [args.tool]
     turb_cases  = TURB_CASES_CLEAN + TURB_CASES_ROUGH
-    sweep_range = ALPHA_RANGE
+    _alpha_step = args.alpha_step if args.alpha_step is not None else ALPHA_STEP_DEFAULT[args.tool]
+    sweep_range = (ALPHA_BOUNDS[0], ALPHA_BOUNDS[1], _alpha_step)
+    print(f'Alpha sweep: {ALPHA_BOUNDS[0]}..{ALPHA_BOUNDS[1]} deg, step {_alpha_step} ({args.tool})')
 
     # ── Build Pareto-front airfoil list ───────────────────────────────────────
     pareto = sorted(

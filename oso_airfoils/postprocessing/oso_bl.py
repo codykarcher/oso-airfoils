@@ -118,7 +118,7 @@ def main():
     parser.add_argument(
         '-t', '--tool',
         default='xfoil',
-        choices=['neuralfoil', 'xfoil'],
+        choices=['neuralfoil', 'xfoil', 'qfoil'],
         help='Aerodynamic solver (default: xfoil).',
     )
     parser.add_argument(

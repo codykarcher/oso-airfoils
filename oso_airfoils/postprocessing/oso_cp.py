@@ -352,7 +352,7 @@ def main() -> None:
     parser.add_argument('path', nargs='?', default='.',
         help='Population JSON file or run directory (default: current directory).')
     parser.add_argument('-t', '--tool', default='xfoil',
-        choices=['neuralfoil', 'xfoil'],
+        choices=['neuralfoil', 'xfoil', 'qfoil'],
         help='Aerodynamic solver (default: xfoil).')
     parser.add_argument('-c', '--compare', nargs='+', metavar='FAMILY', default=[],
         help=(

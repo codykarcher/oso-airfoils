@@ -247,82 +247,100 @@ def core_fitness_function(x):
             return [pid, np.inf, np.inf, False, -10] + [0]*N_reported + [0]*N_constraints
 
         # ----------------------
+        # Solver dispatch + unconverged-drop, factored so the clean/rough sweeps
+        # AND the on-demand downward polar extension below can all reuse it. Returns
+        # (cl, cd, cm, cpmin, alpha) lists of the converged points only.
+        # ----------------------
+        def _sweep(kind, amin, amax, astep):
+            nc, xu, xl = ((N_crit_clean, xtp_u_clean, xtp_l_clean) if kind == 'clean'
+                          else (N_crit_rough, xtp_u_rough, xtp_l_rough))
+            if selected_tool == 'xfoil':
+                r = run_xfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
+            elif selected_tool == 'qfoil':
+                r = run_qfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
+            elif selected_tool == 'neuralfoil':
+                r = run_neuralfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, model=neuralfoil_model)
+            else:
+                raise RuntimeError('Invalid tool selection')
+            if r is None:
+                raise RuntimeError("solver failed")
+            # Drop non-converged sweep points (NaN cl/cd) so they can't poison the
+            # design-point interpolations below — see _drop_unconverged.
+            cl, cd, cm, cp, a = _drop_unconverged(r['cl'], r['cd'], r['cm'], r['cpmin'], r['alpha'])
+            return list(cl), list(cd), list(cm), list(cp), list(a)
+
+        # first index (scanning forward from alpha~0) where CL stops rising = stall
+        # peak. Raises IndexError if the sweep contains no peak (caught -> reject).
+        def _peak(cl, alpha):
+            mid = int(np.argmin(abs(np.array(alpha))))
+            for i in range(mid, mid + len(alpha)):
+                if cl[i] > cl[i-1]:
+                    pass
+                else:
+                    return i - 1
+            raise IndexError("no stall peak in sweep")
+
+        # ----------------------
         # Run Clean Data
         # ----------------------
-        if selected_tool == 'xfoil':
-            res1 = run_xfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
-        elif selected_tool == 'qfoil':
-            res1 = run_qfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
-        elif selected_tool == 'neuralfoil':
-            res1 = run_neuralfoil('alfa', K_upper, K_lower, [alpha_min_clean, alpha_max_clean, alpha_step_clean], Re=Re, N_crit=N_crit_clean, xtp_u=xtp_u_clean, xtp_l=xtp_l_clean, TE_gap = te_gap, model = neuralfoil_model)
-        else:
-            raise RuntimeError('Invalid tool selection')              
-
-        # Drop non-converged sweep points (NaN cl/cd) so they can't poison the
-        # design-point interpolations below — see _drop_unconverged.
-        cl_clean, cd_clean, cm_clean, cpmin_clean, alpha_clean = _drop_unconverged(
-            res1['cl'], res1['cd'], res1['cm'], res1['cpmin'], res1['alpha'])
+        cl_clean, cd_clean, cm_clean, cpmin_clean, alpha_clean = _sweep('clean', alpha_min_clean, alpha_max_clean, alpha_step_clean)
         LoD_clean   = [cl_clean[i]/cd_clean[i] for i in range(0,len(cl_clean))]
 
         # ----------------------
         # Run Rough Data
-        # ----------------------  
-        if selected_tool == 'xfoil':
-            res2 = run_xfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
-        elif selected_tool == 'qfoil':
-            res2 = run_qfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
-        elif selected_tool == 'neuralfoil':
-            res2 = run_neuralfoil('alfa', K_upper, K_lower, [alpha_min_rough, alpha_max_rough, alpha_step_rough], Re=Re, N_crit=N_crit_rough, xtp_u=xtp_u_rough, xtp_l=xtp_l_rough, TE_gap = te_gap, model = neuralfoil_model)
-        else:
-            raise RuntimeError('Invalid tool selection')              
-
-        if res2 is None:
-            raise RuntimeError("Xfoil failed")                
-
-        cl_rough, cd_rough, cm_rough, cpmin_rough, alpha_rough = _drop_unconverged(
-            res2['cl'], res2['cd'], res2['cm'], res2['cpmin'], res2['alpha'])
+        # ----------------------
+        cl_rough, cd_rough, cm_rough, cpmin_rough, alpha_rough = _sweep('rough', alpha_min_rough, alpha_max_rough, alpha_step_rough)
         LoD_rough   = [cl_rough[i]/cd_rough[i] for i in range(0,len(cl_rough))]
         
         # ----------------------
         # Find the stall locations
         # ----------------------
         try:
-            mid_idx_clean = np.argmin(abs(np.array(alpha_clean)))
-            mid_idx_rough = np.argmin(abs(np.array(alpha_rough)))
-
-            positive_peak_index_clean = mid_idx_clean
-            for i in range(mid_idx_clean, mid_idx_clean+len(alpha_clean)):
-                if cl_clean[i] > cl_clean[i-1]:
-                    pass
-                else:
-                    positive_peak_index_clean = i-1
-                    break
-                # will reach an index error if no peak is present
-
-            positive_peak_index_rough = mid_idx_rough
-            for i in range(mid_idx_rough, mid_idx_rough+len(alpha_rough)):
-                if cl_rough[i] > cl_rough[i-1]:
-                    pass
-                else:
-                    positive_peak_index_rough = i-1
-                    break
-                # will reach an index error if no peak is present
-
+            positive_peak_index_clean = _peak(cl_clean, alpha_clean)
+            positive_peak_index_rough = _peak(cl_rough, alpha_rough)
         except:
-            # threw an index error, so no peak is present
+            # no peak present in the sweep
             return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints
-            
-        # ----------------------
-        # Find alpha_design
-        # ----------------------
 
-        if cl_clean[positive_peak_index_clean] > cl_design:
-            alpha_design = np.interp(cl_design, 
-                                     np.array(cl_clean)[0:positive_peak_index_clean], 
-                                     np.array(alpha_clean)[0:positive_peak_index_clean] )
-        else:
-            # raise ValueError("airfoil cannot reach target CL")
+        # ----------------------
+        # On-demand DOWNWARD polar extension (mirrors metafoil oso_gradient.evaluate).
+        # If the design CL is below the clean sweep's starting CL, the design point
+        # sits at NEGATIVE alpha, off the low end of the sweep. Sweep back from the
+        # current alpha_min down to alpha_min_extend (using the clean/rough step) and
+        # PREPEND to BOTH the clean and rough polars, then redo stall detection, so
+        # every downstream design-point interpolation uses the extended data. Only
+        # runs when needed; in-range designs skip it entirely.
+        # ----------------------
+        alpha_min_extend = x['params'].get('alpha_min_extend', -10.0)
+        if cl_design < cl_clean[0] and alpha_clean[0] > alpha_min_extend + 1e-9:
+            ec = _sweep('clean', alpha_min_extend, alpha_clean[0] - alpha_step_clean, alpha_step_clean)
+            er = _sweep('rough', alpha_min_extend, alpha_rough[0] - alpha_step_rough, alpha_step_rough)
+            cl_clean, cd_clean = ec[0] + cl_clean, ec[1] + cd_clean
+            cm_clean, cpmin_clean, alpha_clean = ec[2] + cm_clean, ec[3] + cpmin_clean, ec[4] + alpha_clean
+            cl_rough, cd_rough = er[0] + cl_rough, er[1] + cd_rough
+            cm_rough, cpmin_rough, alpha_rough = er[2] + cm_rough, er[3] + cpmin_rough, er[4] + alpha_rough
+            LoD_clean = [cl_clean[i]/cd_clean[i] for i in range(0, len(cl_clean))]
+            LoD_rough = [cl_rough[i]/cd_rough[i] for i in range(0, len(cl_rough))]
+            try:
+                positive_peak_index_clean = _peak(cl_clean, alpha_clean)
+                positive_peak_index_rough = _peak(cl_rough, alpha_rough)
+            except:
+                return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints
+
+        # ----------------------
+        # Find alpha_design. The (possibly extended) clean pre-stall sweep must
+        # BRACKET the design CL. Above CL_max -> -80; still below the sweep start
+        # (even after extension) -> -85. Do not silently clamp.
+        # ----------------------
+        if cl_clean[positive_peak_index_clean] <= cl_design:
+            # design CL above CL_max -- airfoil cannot reach target CL
             return [pid, np.inf, np.inf, False, -80] + [0]*N_reported + [0]*N_constraints
+        if cl_design < cl_clean[0]:
+            # design CL below the (extended) sweep start -- design point off the low end
+            return [pid, np.inf, np.inf, False, -85] + [0]*N_reported + [0]*N_constraints
+        alpha_design = np.interp(cl_design,
+                                 np.array(cl_clean)[0:positive_peak_index_clean],
+                                 np.array(alpha_clean)[0:positive_peak_index_clean] )
         
         # ----------------------
         # Begin objective function and constraints

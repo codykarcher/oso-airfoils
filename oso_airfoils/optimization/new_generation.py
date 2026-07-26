@@ -125,6 +125,22 @@ def newGeneration(  fitnessFunction,
     else:
         N_mutations = 1
 
+    # Mutation operator selection.
+    #   'legacy'    -- the operator used for every published OSO run. It contains a
+    #                  for/else defect that makes it set bits rather than flip them
+    #                  (see ga_functions.mutateChromosome). Preserved for exact
+    #                  reproducibility of those runs.
+    #   'corrected' -- a true bit flip; use for all new work.
+    # Defaults to 'legacy' so that an existing config is never silently changed.
+    mutation_mode = params.get('mutation_mode', 'legacy') or 'legacy'
+    if mutation_mode not in ('legacy', 'corrected'):
+        raise ValueError(f"mutation_mode must be 'legacy' or 'corrected', got {mutation_mode!r}")
+    if not getattr(newGeneration, '_mutation_mode_announced', False):
+        cprint(f"[GA] mutation operator: {mutation_mode}"
+               + ("  (NOTE: legacy operator only sets bits, never clears them --"
+                  " see ga_functions.mutateChromosome)" if mutation_mode == 'legacy' else ""))
+        newGeneration._mutation_mode_announced = True
+
     population = np.array(population)
     if len(population) % 4 != 0:
         raise ValueError('Population length must be evenly divisible by 4')
@@ -208,6 +224,7 @@ def newGeneration(  fitnessFunction,
                 ins['Ncrossovers'] = N_crossovers
                 ins['probabilityOfMutation'] = probability_of_mutation
                 ins['N_mutations'] = N_mutations
+                ins['mutation_mode'] = mutation_mode
                 ipList.append(ins)
                 remainingMembers.remove(pi1)
                 remainingMembers.remove(pi2)

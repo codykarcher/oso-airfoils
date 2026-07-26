@@ -326,6 +326,29 @@ for i in range(previous_generation_count+1,int(1.2*N_generations)):
 
         cprint(pstr)
 
+        # --- Diversity / collapse monitor ---
+        # Mean per-gene std over the Kulfan design vector, unique-genome count,
+        # and the feasible Pareto-front clean-L/D spread. A steadily shrinking
+        # gene std or a collapsing L/D span is the early signature of a
+        # population collapse; logging it every generation makes that visible
+        # in real time instead of only in hindsight.
+        _pop = save_dict['population']
+        _K = np.array([list(p['K_upper']) + list(p['K_lower']) for p in _pop])
+        _mean_gene_std = float(_K.std(axis=0).mean())
+        _uniq = len({tuple(np.round(row, 6)) for row in _K})
+        _f1 = [p for p in _pop if p['pareto_index'] == 1]
+        _f1_feas = [p for p in _f1 if p['con_tag'] >= 1.0]
+        _src = _f1_feas if _f1_feas else _f1
+        if _src:
+            _cl = [p['LoD_clean_at_design'] for p in _src]
+            _clean_lo, _clean_hi = float(np.nanmin(_cl)), float(np.nanmax(_cl))
+        else:
+            _clean_lo = _clean_hi = float('nan')
+        cprint('[diversity] gen %d | mean_gene_std=%.4f | uniq_genomes=%d/%d | '
+               'front1=%d (feas=%d) | feas_cleanLoD=[%.1f..%.1f] span=%.1f'
+               % (counter - 1, _mean_gene_std, _uniq, len(_pop), len(_f1),
+                  len(_f1_feas), _clean_lo, _clean_hi, _clean_hi - _clean_lo))
+
     should_break = comm.bcast(bool(rank == 0 and counter > N_generations), root=0)
     if should_break:
         break

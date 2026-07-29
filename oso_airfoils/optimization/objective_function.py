@@ -7,9 +7,12 @@ import math
 
 import pathlib
 path_to_here = pathlib.Path(__file__).parent.resolve()
-from oso_airfoils.core.xfoil_wrapper import run as run_xfoil
-from oso_airfoils.core.qfoil_wrapper import run as run_qfoil
-from oso_airfoils.core.neuralfoil_wrapper import run as run_neuralfoil
+
+# The aerodynamic solver is injected into core_fitness_function rather than being
+# a module global chosen by an if/elif on params['tool'] -- see solvers.make_solver.
+# The individual xfoil/qfoil/neuralfoil wrappers are imported lazily there, so a
+# neuralfoil run never pays to import the external-solver wrappers, and vice versa.
+from oso_airfoils.optimization.solvers import make_solver
 
 from oso_airfoils.optimization.geometry_functions import (
     TE_gap_function,
@@ -23,7 +26,7 @@ from oso_airfoils.optimization.geometry_functions import (
     min_radius_location_lower_function)
 
 
-def _drop_unconverged(cl, cd, cm, cpmin, alpha):
+def _drop_unconverged(cl, cd, cm, cpmin, alpha, xtr_top=None, xtr_bot=None):
     """Keep only the converged points of a polar sweep.
 
     metafoil's in-memory xfoil/qfoil sweep returns NaN cl/cd for the alphas
@@ -33,6 +36,11 @@ def _drop_unconverged(cl, cd, cm, cpmin, alpha):
     NaN yields NaN, which would then poison a final reported value and get the
     whole design rejected). Dropping them here restores the old "converged
     points only" polar. Arrays stay mutually aligned; returns lists.
+
+    ``xtr_top``/``xtr_bot`` (reported transition x/c per alpha) are optional; when
+    the solver provides them they are dropped in the same mask and returned too,
+    so the rough transition-cap and clean transition-slope constraints can read
+    them. Absent (e.g. a solver that reports no transition), they come back None.
     """
     cl = np.atleast_1d(np.asarray(cl, dtype=float))
     cd = np.atleast_1d(np.asarray(cd, dtype=float))
@@ -40,10 +48,42 @@ def _drop_unconverged(cl, cd, cm, cpmin, alpha):
     cpmin = np.atleast_1d(np.asarray(cpmin, dtype=float))
     alpha = np.atleast_1d(np.asarray(alpha, dtype=float))
     m = np.isfinite(cl) & np.isfinite(cd) & np.isfinite(alpha)
-    return list(cl[m]), list(cd[m]), list(cm[m]), list(cpmin[m]), list(alpha[m])
+    xt = list(np.atleast_1d(np.asarray(xtr_top, dtype=float))[m]) if xtr_top is not None else None
+    xb = list(np.atleast_1d(np.asarray(xtr_bot, dtype=float))[m]) if xtr_bot is not None else None
+    return list(cl[m]), list(cd[m]), list(cm[m]), list(cpmin[m]), list(alpha[m]), xt, xb
 
 
-def airfoil_fitness(x):
+#: Rejection codes returned in the ``alpha_design`` slot (index 4) when an airfoil is
+#: rejected before the design point can be evaluated.
+#:
+#: A rejected row is ``[pid, inf, inf, False, CODE, 0, 0, ...]`` -- the objectives are
+#: inf and ``con_tag`` is False, and this slot carries WHY. The values are deliberately
+#: absurd as angles of attack: a design alpha of -80 degrees is self-evidently not a
+#: real answer, so a garbage row announces itself instead of blending in with plausible
+#: ones.
+#:
+#: The trap for post-processing: read this column WITHOUT first masking on
+#: ``obj1 == inf`` (or ``con_tag``) and you are averaging status codes together with
+#: real angles, which yields a meaningless number.
+REJECTION_CODES = {
+    -10: 'self-intersecting geometry (negative thickness somewhere)',
+    -20: 'upper Kulfan coefficient magnitude > 2',
+    -30: 'lower Kulfan coefficient magnitude > 2',
+    -60: 'rough sweep did not reach target_alpha (high alphas did not converge)',
+    -70: 'no stall peak found in the sweep',
+    -80: 'design CL is above the airfoil CL_max',
+    -85: 'design CL is below the start of the (extended) sweep',
+    -90: 'exception during evaluation, or a NaN in the reported values',
+}
+
+
+def airfoil_fitness(x, solver=None, kulfan=None):
+    """Evaluate one individual, retrying up to ``N_tries`` times on a solver failure.
+
+    ``solver`` / ``kulfan`` are the injected aerodynamic solver and geometry class
+    (see :func:`core_fitness_function`); leaving them ``None`` builds the defaults
+    from ``x['params']``, which is what a plain single-airfoil call wants.
+    """
     N_tries = x['params']['N_tries']
     if N_tries is None:
         N_rtr = 1
@@ -51,12 +91,27 @@ def airfoil_fitness(x):
         N_rtr = N_tries
 
     for i in range(0,N_rtr):
-        res = core_fitness_function(x)
+        res = core_fitness_function(x, solver=solver, kulfan=kulfan)
         if res[3] > -10:
             return res
     return res
 
-def core_fitness_function(x):
+def core_fitness_function(x, solver=None, kulfan=None):
+    """Objectives + 31 constraints for one design vector.
+
+    Parameters
+    ----------
+    x : dict
+        ``{'pid': int, 'individual': design vector, 'params': case params}``.
+    solver : callable, optional
+        An AeroSolver (see ``solvers.make_solver``). Defaults to the solver implied
+        by ``params['tool']``. Injecting it is what lets the GPU-batched evaluator
+        serve every polar in a generation from one forward without this function
+        knowing anything about batching.
+    kulfan : class, optional
+        Geometry class constructed as ``kulfan(TE_gap=...)``. Defaults to metafoil's
+        ``Kulfan``; the batched path passes a registry-backed drop-in instead.
+    """
     # ----------------------
     # unpack
     # ----------------------
@@ -208,20 +263,12 @@ def core_fitness_function(x):
         xtp_u_rough      = x['params']['xtp_u_rough']
         xtp_l_rough      = x['params']['xtp_l_rough']
 
-        selected_tool = x['params']['tool']
-
-        if selected_tool == 'xfoil':
-            path_to_XFOIL = x['params'].get('xfoil_path', None)
-            tfpre = x['params'].get('xfoil_tempfile_path_leader', 't_')
-            xfoil_timelimit  = x['params']['xfoil_timelimit']
-        elif selected_tool == 'qfoil':
-            path_to_QFOIL = x['params'].get('qfoil_path', None)
-            tfpre = x['params'].get('qfoil_tempfile_path_leader', 't_')
-            xfoil_timelimit  = x['params'].get('qfoil_timelimit', 10)
-        elif selected_tool == 'neuralfoil':
-            neuralfoil_model = x['params']['neuralfoil_model']
-        else:
-            raise RuntimeError('Invalid tool selection')
+        # Solver and geometry class are injected (see the docstring). Building them
+        # here when absent keeps a bare core_fitness_function(x) call working.
+        if solver is None:
+            solver = make_solver(x['params'])
+        if kulfan is None:
+            kulfan = Kulfan
 
         # ----------------------
         # reject too large coefficients
@@ -234,7 +281,7 @@ def core_fitness_function(x):
         # ----------------------
         # build airfoil
         # ----------------------
-        afl_geo = Kulfan(TE_gap = te_gap)
+        afl_geo = kulfan(TE_gap = te_gap)
         afl_geo.upperCoefficients = K_upper
         afl_geo.lowerCoefficients = K_lower
         afl_geo.chord = 1.0*units.m
@@ -247,49 +294,48 @@ def core_fitness_function(x):
             return [pid, np.inf, np.inf, False, -10] + [0]*N_reported + [0]*N_constraints
 
         # ----------------------
-        # Solver dispatch + unconverged-drop, factored so the clean/rough sweeps
-        # AND the on-demand downward polar extension below can all reuse it. Returns
+        # Sweep + unconverged-drop, factored so the clean/rough sweeps AND the
+        # on-demand downward polar extension below can all reuse it. Returns
         # (cl, cd, cm, cpmin, alpha) lists of the converged points only.
         # ----------------------
         def _sweep(kind, amin, amax, astep):
             nc, xu, xl = ((N_crit_clean, xtp_u_clean, xtp_l_clean) if kind == 'clean'
                           else (N_crit_rough, xtp_u_rough, xtp_l_rough))
-            if selected_tool == 'xfoil':
-                r = run_xfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, timelimit=xfoil_timelimit, path_to_XFOIL=path_to_XFOIL, tfpre=tfpre)
-            elif selected_tool == 'qfoil':
-                r = run_qfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, timelimit=xfoil_timelimit, path_to_QFOIL=path_to_QFOIL, tfpre=tfpre)
-            elif selected_tool == 'neuralfoil':
-                r = run_neuralfoil('alfa', K_upper, K_lower, [amin, amax, astep], Re=Re, N_crit=nc, xtp_u=xu, xtp_l=xl, TE_gap=te_gap, model=neuralfoil_model)
-            else:
-                raise RuntimeError('Invalid tool selection')
+            r = solver(K_upper, K_lower, [amin, amax, astep], N_crit=nc, xtp_u=xu, xtp_l=xl)
             if r is None:
                 raise RuntimeError("solver failed")
             # Drop non-converged sweep points (NaN cl/cd) so they can't poison the
-            # design-point interpolations below — see _drop_unconverged.
-            cl, cd, cm, cp, a = _drop_unconverged(r['cl'], r['cd'], r['cm'], r['cpmin'], r['alpha'])
-            return list(cl), list(cd), list(cm), list(cp), list(a)
+            # design-point interpolations below — see _drop_unconverged. xtr_top/xtr_bot
+            # (reported transition x/c) ride along when the solver provides them.
+            cl, cd, cm, cp, a, xt, xb = _drop_unconverged(
+                r['cl'], r['cd'], r['cm'], r['cpmin'], r['alpha'],
+                r.get('xtr_top'), r.get('xtr_bot'))
+            return list(cl), list(cd), list(cm), list(cp), list(a), xt, xb
 
         # first index (scanning forward from alpha~0) where CL stops rising = stall
-        # peak. Raises IndexError if the sweep contains no peak (caught -> reject).
+        # peak (the intentional first-roll-over definition). If CL never declines in
+        # range, the airfoil simply hasn't stalled within the sweep -> use the last
+        # index (the sweep edge = a large stall margin), matching the gradient model's
+        # _positive_peak_index. Previously this raised -> reject (-70), which rejected
+        # high-camber airfoils whose rough CL rises past the sweep top; the gradient
+        # (now-working reference) keeps them, so this stays consistent with it.
         def _peak(cl, alpha):
             mid = int(np.argmin(abs(np.array(alpha))))
-            for i in range(mid, mid + len(alpha)):
-                if cl[i] > cl[i-1]:
-                    pass
-                else:
+            for i in range(mid + 1, len(cl)):
+                if cl[i] <= cl[i - 1]:
                     return i - 1
-            raise IndexError("no stall peak in sweep")
+            return len(cl) - 1
 
         # ----------------------
         # Run Clean Data
         # ----------------------
-        cl_clean, cd_clean, cm_clean, cpmin_clean, alpha_clean = _sweep('clean', alpha_min_clean, alpha_max_clean, alpha_step_clean)
+        cl_clean, cd_clean, cm_clean, cpmin_clean, alpha_clean, xtr_top_clean, xtr_bot_clean = _sweep('clean', alpha_min_clean, alpha_max_clean, alpha_step_clean)
         LoD_clean   = [cl_clean[i]/cd_clean[i] for i in range(0,len(cl_clean))]
 
         # ----------------------
         # Run Rough Data
         # ----------------------
-        cl_rough, cd_rough, cm_rough, cpmin_rough, alpha_rough = _sweep('rough', alpha_min_rough, alpha_max_rough, alpha_step_rough)
+        cl_rough, cd_rough, cm_rough, cpmin_rough, alpha_rough, xtr_top_rough, xtr_bot_rough = _sweep('rough', alpha_min_rough, alpha_max_rough, alpha_step_rough)
         LoD_rough   = [cl_rough[i]/cd_rough[i] for i in range(0,len(cl_rough))]
         
         # ----------------------
@@ -319,6 +365,11 @@ def core_fitness_function(x):
             cm_clean, cpmin_clean, alpha_clean = ec[2] + cm_clean, ec[3] + cpmin_clean, ec[4] + alpha_clean
             cl_rough, cd_rough = er[0] + cl_rough, er[1] + cd_rough
             cm_rough, cpmin_rough, alpha_rough = er[2] + cm_rough, er[3] + cpmin_rough, er[4] + alpha_rough
+            # keep the transition arrays aligned with the prepended polars (when present)
+            if xtr_top_clean is not None and ec[5] is not None: xtr_top_clean = ec[5] + xtr_top_clean
+            if xtr_bot_clean is not None and ec[6] is not None: xtr_bot_clean = ec[6] + xtr_bot_clean
+            if xtr_top_rough is not None and er[5] is not None: xtr_top_rough = er[5] + xtr_top_rough
+            if xtr_bot_rough is not None and er[6] is not None: xtr_bot_rough = er[6] + xtr_bot_rough
             LoD_clean = [cl_clean[i]/cd_clean[i] for i in range(0, len(cl_clean))]
             LoD_rough = [cl_rough[i]/cd_rough[i] for i in range(0, len(cl_rough))]
             try:
@@ -473,7 +524,100 @@ def core_fitness_function(x):
         if LoD_falloff_weighting is not None and LoD_falloff_weighting != 0.0:
             conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_left )])-percent_LoD_falloff_threshold)
             conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_right)])-percent_LoD_falloff_threshold)
-       
+
+        # ======================================================================
+        # Constraints ported from the gradient optimizer (gradient_objective.py) to
+        # keep the GA fitness consistent with it. All are AERO-performance guards, so
+        # they follow the same SOFT-PENALTY convention as delta_cl / lod_falloff above
+        # (conpen only, not in cons[]), and each is individually TOGGLABLE via its own
+        # *_weighting param (None/0 -> no effect). All new params are read with .get()
+        # so runfiles that predate them are unaffected.
+        # ======================================================================
+        # Inclusive pre-stall interpolation (through the peak point), matching the
+        # gradient optimizer's `at(...)` [:pk+1] convention. Guarded below on a valid
+        # peak index (>= 2): a degenerate polar (no proper peak -> _peak returns a
+        # non-positive index) simply skips these constraints rather than reading a
+        # backwards/empty slice.
+        _cpk = positive_peak_index_clean
+        _rpk = positive_peak_index_rough
+        def _pre_interp(a, ap, vals, pk):
+            return np.interp(a, np.array(ap)[0:pk + 1], np.array(vals)[0:pk + 1])
+
+        # --- (1) SECOND L/D falloff at a wider offset (default 2 deg): holds L/D flat
+        # further below design so the laminar-bucket lower knee can't perch under the
+        # operating point. Mirrors gradient_objective's lod_falloff_2. ---------------
+        LoD_falloff_2_weighting = x['params'].get('LoD_falloff_2_weighting', None)
+        alpha_falloff_offset_2  = x['params'].get('alpha_falloff_offset_2', 2.0)
+        percent_LoD_falloff_threshold_2 = x['params'].get('percent_LoD_falloff_threshold_2', percent_LoD_falloff_threshold)
+        if LoD_falloff_2_weighting is not None and LoD_falloff_2_weighting != 0.0:
+            for ap, lod, lod_des, pk in ((alpha_clean, LoD_clean, LoD_clean_at_design_alpha, _cpk),
+                                         (alpha_rough, LoD_rough, LoD_rough_at_design_alpha, _rpk)):
+                if pk < 2:
+                    continue
+                for da in (-alpha_falloff_offset_2, alpha_falloff_offset_2):
+                    pc = (_pre_interp(alpha_design + da, ap, lod, pk) - lod_des) / lod_des
+                    conpen += LoD_falloff_2_weighting * (max([percent_LoD_falloff_threshold_2, abs(pc)]) - percent_LoD_falloff_threshold_2)
+
+        # --- (2) ROUGH LIFT-SLOPE RATIO: slope(dCL/dalpha) @ design / @ zero-lift on the
+        # rough polar. A rough curve that has rounded off (lost attached slope) before
+        # design => low ratio => the tool is extrapolating through incipient separation.
+        # Reference-free (anchors CL=0 and CL=CL_design; central FD, half-step
+        # slope_ratio_h). Needs the rough polar to bracket zero-lift AND reach
+        # slope_ratio_alpha_min so the +/-h differences aren't clamped at the sweep edge
+        # (the grid bug that doubles the ratio). For the batched path set the runfile's
+        # alpha_min_extend <= slope_ratio_alpha_min so this extension stays cache-served.
+        # Mirrors gradient_objective's rough_slope_ratio. ---------------------------
+        slope_ratio_weighting = x['params'].get('slope_ratio_weighting', None)
+        rough_slope_ratio_min = x['params'].get('rough_slope_ratio_min', None)
+        if (slope_ratio_weighting is not None and slope_ratio_weighting != 0.0
+                and rough_slope_ratio_min is not None and _rpk >= 2):
+            srh = x['params'].get('slope_ratio_h', 0.5)
+            sr_amin = x['params'].get('slope_ratio_alpha_min', -14.0)
+            clr = list(cl_rough[0:_rpk + 1])
+            alr = list(alpha_rough[0:_rpk + 1])
+            if alr and alr[0] > sr_amin + 1e-9:            # reach low enough to bracket zero-lift +/- h
+                ext = _sweep('rough', sr_amin, alr[0] - alpha_step_rough, alpha_step_rough)
+                clr = ext[0] + clr
+                alr = ext[4] + alr
+            clr = np.array(clr); alr = np.array(alr)
+            if clr.size and clr.min() <= 0.0 <= clr.max():             # zero-lift bracketed
+                a0 = np.interp(0.0, clr, alr)              # rough zero-lift alpha
+                ad = np.interp(cl_design, clr, alr)        # rough design alpha
+                m0 = (np.interp(a0 + srh, alr, clr) - np.interp(a0 - srh, alr, clr)) / (2 * srh)
+                md = (np.interp(ad + srh, alr, clr) - np.interp(ad - srh, alr, clr)) / (2 * srh)
+                rough_slope_ratio = md / max(m0, 0.02)
+                conpen += slope_ratio_weighting * (rough_slope_ratio_min - min([rough_slope_ratio_min, rough_slope_ratio]))
+
+        # --- (3) ROUGH TRANSITION-LOCATION CAP: the rough case forces transition at
+        # xtp~0.05, so a reported Top/Bot_Xtr above that trip is numerical
+        # re-laminarization (fake laminar rough drag). Sampled at design and the falloff
+        # offsets. Mirrors gradient_objective's rough_xtr_cap. Needs solver xtr. -------
+        rough_xtr_cap_weighting = x['params'].get('rough_xtr_cap_weighting', None)
+        if (rough_xtr_cap_weighting is not None and rough_xtr_cap_weighting != 0.0
+                and xtr_top_rough is not None and _rpk >= 2):
+            xm = x['params'].get('rough_xtr_max', 0.05)
+            _o2 = x['params'].get('alpha_falloff_offset_2', None)
+            xoffs = [0.0, -alpha_falloff_offset, alpha_falloff_offset] + ([-_o2, _o2] if _o2 is not None else [])
+            for xarr in (xtr_top_rough, xtr_bot_rough):
+                if xarr is None:
+                    continue
+                for da in xoffs:
+                    xt = _pre_interp(alpha_design + da, alpha_rough, xarr, _rpk)
+                    conpen += rough_xtr_cap_weighting * (max([xm, xt]) - xm)
+
+        # --- (4) CLEAN UPPER TRANSITION-SLOPE: forward march of the clean upper
+        # transition point over the +xtr_slope_offset window above design. Large =>
+        # design parked on a laminar cliff. Mirrors gradient_objective's
+        # transition_slope. One-sided (only the forward march is a cliff). Needs xtr. --
+        transition_slope_weighting = x['params'].get('transition_slope_weighting', None)
+        xtr_slope_threshold        = x['params'].get('xtr_slope_threshold', None)
+        if (transition_slope_weighting is not None and transition_slope_weighting != 0.0
+                and xtr_slope_threshold is not None and xtr_top_clean is not None and _cpk >= 2):
+            toff = x['params'].get('xtr_slope_offset', 1.0)
+            xtr_slope_c = (_pre_interp(alpha_design, alpha_clean, xtr_top_clean, _cpk)
+                           - _pre_interp(alpha_design + toff, alpha_clean, xtr_top_clean, _cpk))
+            conpen += transition_slope_weighting * (max([xtr_slope_threshold, xtr_slope_c]) - xtr_slope_threshold)
+
         # ----------------------
         # structure surrogates
         # ----------------------
@@ -893,7 +1037,6 @@ def core_fitness_function(x):
 
         return r_list
     except:
-        return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
         return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
 
 

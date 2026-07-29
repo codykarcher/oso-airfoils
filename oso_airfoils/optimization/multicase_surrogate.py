@@ -19,7 +19,9 @@ from the shared forward), so two cases sharing (ncrit, xtr) but differing in Re 
 
 import numpy as np
 
-from oso_airfoils.optimization.batch_surrogate import BatchSurrogate, _key
+from oso_airfoils.optimization.batch_surrogate import (
+    BatchSurrogate, _key, geometry_device_for, to_net_order,
+)
 from oso_airfoils.optimization import batch_geometry as _bg
 
 
@@ -33,6 +35,9 @@ class MultiCaseSurrogate:
         self.backend = backend
         self.model_size = model_size
         self.device = self._shared.device
+        # The float64 geometry cannot run on every device the float32 net can (MPS has
+        # no float64), so the two halves of a pulse may land on different devices.
+        self.geometry_device = geometry_device_for(self.device)
 
     def new_case_cache(self):
         """A BatchSurrogate used purely as a per-case cache container + serving front-end.
@@ -69,12 +74,15 @@ class MultiCaseSurrogate:
             for i, k in enumerate(keys):
                 uniq.setdefault(k, i)
             uidx = list(uniq.values())
+            # Refit to the net's coefficient order (see batch_surrogate.to_net_order);
+            # the cache keys above stay in the case's own design-vector order.
+            fu, fl = to_net_order(U[uidx], L[uidx], tes[uidx])
 
             row_span = {}
             for pos, i in enumerate(uidx):
                 for sw in sweeps:
                     al = np.asarray(sw["alphas"], float).ravel(); n = len(al)
-                    ru.append(np.tile(U[i], (n, 1))); rl.append(np.tile(L[i], (n, 1)))
+                    ru.append(np.tile(fu[pos], (n, 1))); rl.append(np.tile(fl[pos], (n, 1)))
                     rt.append(np.full(n, tes[i])); ra.append(al)
                     rRe.append(np.full(n, float(sw["Re"]))); rnc.append(np.full(n, float(sw["ncrit"])))
                     rxu.append(np.full(n, float(sw["xtr_u"]))); rxl.append(np.full(n, float(sw["xtr_l"])))
@@ -111,14 +119,21 @@ class MultiCaseSurrogate:
         """items: list of dicts, each {'id': hashable, 'uppers', 'lowers', 'tes',
         'n_pts', 'spacing', 'tooth'}. Returns {id: (registry, psi, tooth)} — a genome-keyed
         TorchKulfan registry for each case, batched across cases that share (n_pts, spacing,
-        tooth). Install with TorchKulfan.install_registry(...) before that case's eval."""
+        tooth). Wrap one in a TorchKulfanFactory and pass it to the objective function
+        as its ``kulfan`` argument for that case's evaluation."""
+        # Group by geometry config AND by Kulfan order: unlike the aero pulse, the
+        # constraint geometry stays in each case's own design-vector order, so cases
+        # with different N_k have different coefficient widths and cannot be
+        # concatenated into one batched call.
         groups = {}
         for it in items:
-            gk = (int(it['n_pts']), str(it['spacing']), _tooth_key(it['tooth']))
+            gk = (int(it['n_pts']), str(it['spacing']), _tooth_key(it['tooth']),
+                  np.asarray(it['uppers'], float).shape[-1],
+                  np.asarray(it['lowers'], float).shape[-1])
             groups.setdefault(gk, []).append(it)
 
         result = {}
-        for (n_pts, spacing, _tk), gitems in groups.items():
+        for (n_pts, spacing, _tk, _nu, _nl), gitems in groups.items():
             tooth = gitems[0]['tooth']
             Us = [np.asarray(it['uppers'], float) for it in gitems]
             Ls = [np.asarray(it['lowers'], float) for it in gitems]
@@ -131,7 +146,7 @@ class MultiCaseSurrogate:
             U = np.concatenate(Us, 0); L = np.concatenate(Ls, 0); TE = np.concatenate(tes)
             registry, psi = _bg.precompute_population_geometry(
                 U, L, TE, n_pts=n_pts, spacing=spacing, toothpick_location=tooth,
-                device=self.device)
+                device=self.geometry_device)
             for it in gitems:
                 result[it['id']] = (registry, psi, tooth)
         return result

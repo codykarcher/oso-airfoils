@@ -27,16 +27,45 @@ Speedups implemented here (per the plan — GPU/CPU only, no algorithmic changes
     single batched call already amortizes kernel-launch overhead, so it's low marginal value;
     wire it only if per-generation launch overhead shows up in a profile.
 
-Usage (see batched_new_generation.py for the GA wiring):
+Usage (see evaluators.GPUBatchEvaluator for the GA wiring):
     bs = BatchSurrogate(backend="nxfoil", model_size="xxxlarge", device="cuda")
     bs.build_population_cache(uppers, lowers, tes, sweeps)   # one GPU forward
     run = bs.make_cached_run()                               # drop-in for neuralfoil_wrapper.run
+
+The cached run is handed to solvers.make_solver(params, neuralfoil_run=run), which is
+what the objective function calls -- no module-global patching is involved.
 """
 import numpy as np
 import torch
 
 _N_STATION = 32
 _BL_KEYS = ("ue/vinf", "theta", "H")
+
+
+def resolve_device(device):
+    """Validate a requested torch device, falling back to CPU when it isn't usable.
+
+    Silently downgrading is right here: a case file that says ``cuda`` should still
+    run on a laptop, just slower. The resolved device is reported by the evaluator's
+    ``describe()`` so the downgrade is visible rather than mysterious.
+    """
+    d = str(device or 'cpu').lower()
+    if d.startswith('cuda') and not torch.cuda.is_available():
+        return 'cpu'
+    if d == 'mps' and not (torch.backends.mps.is_built() and torch.backends.mps.is_available()):
+        return 'cpu'
+    return d
+
+
+def geometry_device_for(device):
+    """Device for the batched GEOMETRY, which may differ from the aero device.
+
+    kulfan_torch computes in float64 for the exactness the constraint set needs
+    (area/moments agree with the Kulfan class to ~1e-14). Apple's MPS backend has no
+    float64 at all, so on MPS the geometry runs on the CPU while the aero net -- which
+    is float32 -- still runs on the GPU. Everywhere else this is just ``device``.
+    """
+    return 'cpu' if str(device).lower() == 'mps' else device
 
 
 def _enable_fast_math():
@@ -54,13 +83,41 @@ def _key(upper, lower, te):
     return (u.tobytes(), l.tobytes(), round(float(te), 10))
 
 
+#: Kulfan coefficients per surface expected by the surrogate nets (nxfoil/nqfoil).
+NET_ORDER = 8
+
+
+def to_net_order(uppers, lowers, tes):
+    """Refit a population's coefficients to the order the surrogate nets take.
+
+    The nets have a fixed 8-coefficient-per-surface input, but the optimizer's
+    design vector can be any order (N_k = 8 means 4 per surface, and so on). This
+    is the batched equivalent of the ``afl.changeOrder(8)`` that the per-airfoil
+    NeuralFoil wrapper does before its own call, so the batched and serial paths
+    feed the net the same geometry.
+
+    Raising the order is exact -- a lower-degree Bernstein polynomial lies exactly
+    in the higher-degree basis -- so nothing is approximated on the way in.
+
+    Note the caller keys its cache on the ORIGINAL coefficients: the objective
+    function looks polars up with the design vector it was handed, which is in the
+    original order. Only the rows fed to the forward are refit.
+    """
+    uppers = np.asarray(uppers, float)
+    lowers = np.asarray(lowers, float)
+    if uppers.shape[-1] == NET_ORDER and lowers.shape[-1] == NET_ORDER:
+        return uppers, lowers
+    from metafoil.core.kulfan_torch import batch_change_order
+    return batch_change_order(uppers, lowers, NET_ORDER, te_gap=tes)
+
+
 class BatchSurrogate:
     def __init__(self, backend="nxfoil", model_size="xxxlarge", device="cuda",
                  use_cuda_graph=False):
         self.backend = backend
         self.model_size = model_size
-        self.device = device if (device != "cuda" or torch.cuda.is_available()) else "cpu"
-        self.use_cuda_graph = use_cuda_graph and self.device != "cpu"
+        self.device = resolve_device(device)
+        self.use_cuda_graph = use_cuda_graph and self.device.startswith("cuda")
         _enable_fast_math()
         # persistent net (loaded once, kept on-device for the whole run)
         if backend == "nxfoil":
@@ -68,11 +125,38 @@ class BatchSurrogate:
             self._nx = nxfoil
             self._net = nxfoil.get_net(model_size, self.device)
         elif backend == "nqfoil":
-            from metafoil.nqfoil import inference as nqi
-            self._nqi = nqi
-            self._net, self._meta = nqi.load_model(model_size)
+            # The full-BL nqfoil models mirror nxfoil's API and output contract, so
+            # both backends go through the same batched entry point below.
+            from metafoil.nqfoil import full_bl
+            self._nq = full_bl
+            sizes = full_bl.available_sizes()
+            if model_size not in sizes:
+                raise ValueError(
+                    f"nqfoil has no '{model_size}' model; available sizes are {sizes}. "
+                    "(the two ladders differ in length, so a config written for one "
+                    "backend may need --model overridden for the other.)")
+            self._net = full_bl.get_net(model_size, self.device)
+        elif backend == "nqfoil_torch":
+            # The differentiable torch reimplementation the gradient uses -- float32
+            # GPU forward instead of full_bl's numpy path. Use it so the batched GA
+            # sees the SAME polars as the gradient (full_bl's float64 numpy captures a
+            # tiny plateau dip that the first-roll-over stall detector mis-reads as an
+            # early stall; nqfoil_torch's float32 forward smooths it, matching the
+            # gradient). See _forward_nqfoil_torch.
+            from oso_airfoils.optimization import nqfoil_torch as nqt
+            self._nqt = nqt
+            self._nqt_pack = nqt.load(model_size, self.device)
+            self._net = None
+            # CRITICAL: disable TF32. TF32's ~1e-3 matmul rounding puts a spurious 0.001
+            # dip on flat CL plateaus, which the first-roll-over stall detector reads as an
+            # early stall -> false stall-margin violations that reject high-camber near-corner
+            # airfoils. The gradient avoids this by running the same net on CPU (no TF32);
+            # full float32 here reproduces the CPU/gradient polar exactly.
+            import torch as _torch
+            _torch.backends.cuda.matmul.allow_tf32 = False
+            _torch.backends.cudnn.allow_tf32 = False
         else:
-            raise ValueError(f"backend must be 'nxfoil' or 'nqfoil', got {backend!r}")
+            raise ValueError(f"backend must be 'nxfoil', 'nqfoil' or 'nqfoil_torch', got {backend!r}")
         self._graph = {}          # row-count -> (static_in, static_out, graph)
         self._cache = None        # dict: (key, sweep_name) -> per-alpha output dict
 
@@ -87,40 +171,62 @@ class BatchSurrogate:
             return {k: v.detach().float().cpu().numpy().reshape(-1) for k, v in out.items()}
 
     def _forward_nqfoil(self, uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l):
-        """Batched qfoil-surrogate forward. Builds the 25-d feature matrix for all rows and
-        runs the net once. Returns CL/CD/CM/Cpmin/Top_Xtr/Bot_Xtr as (N,) arrays."""
-        from metafoil.nqfoil import config
-        N = len(alphas)
-        up = np.asarray(uppers, np.float32); lo = np.asarray(lowers, np.float32)
-        a = np.asarray(alphas, np.float32); ar = a * (np.pi / 180.0)
-        te = np.asarray(tes, np.float32); Re = np.asarray(Res, np.float64)
-        nc = np.asarray(ncrits, np.float32); xu = np.asarray(xtr_u, np.float32); xl = np.asarray(xtr_l, np.float32)
-        X = np.concatenate([
-            up, lo,
-            np.full((N, 1), config.LE_WEIGHT_CONST, np.float32),
-            (te * 50.0).reshape(N, 1),
-            np.sin(2 * ar).reshape(N, 1), np.cos(ar).reshape(N, 1), (np.sin(ar) ** 2).reshape(N, 1),
-            ((np.log(Re) - 12.5) / 3.5).astype(np.float32).reshape(N, 1),
-            ((nc - 9.0) / 4.5).reshape(N, 1), xu.reshape(N, 1), xl.reshape(N, 1),
-        ], axis=1).astype(np.float32)
+        """Batched full-BL nqfoil forward. One GPU/CPU forward over all rows.
+
+        The full-BL nqfoil models expose the same batched entry point and the same flat
+        output keys as nxfoil, so this mirrors :meth:`_forward_nxfoil` exactly; the only
+        difference downstream is that nqfoil carries a natively trained ``Cpmin``.
+        """
         with torch.inference_mode():
-            xt = torch.from_numpy(X).to(self.device)
-            conf_logit, reg = self._net.predict_latent(xt)
-            latent = reg * self._net.out_std + self._net.out_mean
-            latent = latent.detach().float().cpu().numpy()
-        out = {}
-        for j, (name, qkey, tr) in enumerate(self._meta["core_outputs"]):
-            v = latent[:, j]
-            if tr == "lncd":
-                v = np.exp(v)
-            elif name in ("Top_Xtr", "Bot_Xtr"):
-                v = np.clip(v, 0.0, 1.0)
-            out[name] = v
+            return self._nq.get_aero_batch(
+                uppers, lowers, tes=tes, alphas=alphas, Res=Res, n_crits=ncrits,
+                xtr_uppers=xtr_u, xtr_lowers=xtr_l, model_size=self.model_size,
+                device=self.device)
+
+    def _forward_nqfoil_torch(self, uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l):
+        """Paired (one row per (airfoil, alpha)) forward through nqfoil_torch, the same
+        float32 model the gradient uses. Mirrors nqfoil_torch.aero's feature layout and
+        output de-standardization, but built for the flat N-row batch this class serves
+        rather than aero's (B airfoils x A alphas) outer product. Returns (N,) arrays
+        keyed CL/CD/CM/Cpmin/Top_Xtr/Bot_Xtr, matching _pack_res."""
+        import torch
+        nqt = self._nqt; pack = self._nqt_pack; f32 = torch.float32; dev = self.device
+        def t(a):
+            return torch.as_tensor(np.asarray(a), dtype=f32, device=dev)
+        up = t(uppers); lo = t(lowers); N = up.shape[0]
+        ar = t(alphas).reshape(-1) * (np.pi / 180.0)
+        o = torch.ones(N, 1, dtype=f32, device=dev)
+        def col(v):
+            x = t(v).reshape(-1)
+            return (x.expand(N) if x.numel() == 1 else x).reshape(N, 1)
+        from metafoil.nqfoil import config as cfg
+        X = torch.cat([
+            up, lo,
+            float(cfg.LE_WEIGHT_CONST) * o,
+            col(tes) * 50.0,
+            torch.sin(2 * ar).reshape(N, 1), torch.cos(ar).reshape(N, 1), (torch.sin(ar) ** 2).reshape(N, 1),
+            (torch.log(col(Res)) - 12.5) / 3.5,
+            (col(ncrits) - 9.0) / 4.5,
+            col(xtr_u), col(xtr_l),
+        ], dim=1)
+        with torch.inference_mode():
+            y = nqt._raw_forward(X, pack)
+            phys = y[:, 1:] * pack["ostd"] + pack["omean"]
+            out = {}
+            for j, name in enumerate(nqt.CORE):
+                v = phys[:, j]
+                if j == nqt._CD_IDX:
+                    v = torch.exp(v)
+                elif name in ("Top_Xtr", "Bot_Xtr"):
+                    v = torch.clamp(v, 0.0, 1.0)
+                out[name] = v.detach().float().cpu().numpy().reshape(-1)
         return out
 
     def _forward(self, uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l):
         if self.backend == "nxfoil":
             return self._forward_nxfoil(uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l)
+        if self.backend == "nqfoil_torch":
+            return self._forward_nqfoil_torch(uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l)
         return self._forward_nqfoil(uppers, lowers, tes, alphas, Res, ncrits, xtr_u, xtr_l)
 
     # ---- build the whole-generation cache in one forward ----
@@ -138,6 +244,8 @@ class BatchSurrogate:
             uniq.setdefault(k, i)
         uidx = list(uniq.values())                      # representative row per unique genome
         U = len(uidx)
+        # Refit to the net's coefficient order once, for the unique genomes only.
+        fu, fl = to_net_order(uppers[uidx], lowers[uidx], tes[uidx])
 
         # assemble all rows: for each unique airfoil, each sweep, each alpha
         ru, rl, rt, ra, rRe, rnc, rxu, rxl = ([] for _ in range(8))
@@ -146,7 +254,7 @@ class BatchSurrogate:
         for pos, i in enumerate(uidx):
             for sw in sweeps:
                 al = np.asarray(sw["alphas"], float).ravel(); n = len(al)
-                ru.append(np.tile(uppers[i], (n, 1))); rl.append(np.tile(lowers[i], (n, 1)))
+                ru.append(np.tile(fu[pos], (n, 1))); rl.append(np.tile(fl[pos], (n, 1)))
                 rt.append(np.full(n, tes[i])); ra.append(al)
                 rRe.append(np.full(n, float(sw["Re"]))); rnc.append(np.full(n, float(sw["ncrit"])))
                 rxu.append(np.full(n, float(sw["xtr_u"]))); rxl.append(np.full(n, float(sw["xtr_l"])))
@@ -178,33 +286,30 @@ class BatchSurrogate:
         aall = rec["_alphas"]
         idx = [int(np.argmin(np.abs(aall - av))) for av in alpha_req]   # exact int-alpha match
         take = lambda name: np.asarray(rec[name])[idx]
-        if self.backend == "nxfoil":
+        cl, cd, cm = take("CL"), take("CD"), take("CM")
+        xtr_t, xtr_b = take("Top_Xtr"), take("Bot_Xtr")
+        if self.backend in ("nqfoil", "nqfoil_torch") and "Cpmin" in rec:
+            # qfoil reports Cpmin, so nqfoil trains it directly -- preferred over
+            # reconstructing it from 32 BL edge-velocity stations.
+            cpmin = take("Cpmin")
+        else:
+            # only the Cpmin fallback needs the BL edge velocities; theta/H are
+            # unused now that cp_data/bl_data are not built (see below).
             u_ue = np.array([rec[f"upper_bl_ue/vinf_{i}"][idx] for i in range(_N_STATION)])
             l_ue = np.array([rec[f"lower_bl_ue/vinf_{i}"][idx] for i in range(_N_STATION)])
-            u_th = np.array([rec[f"upper_bl_theta_{i}"][idx] for i in range(_N_STATION)])
-            l_th = np.array([rec[f"lower_bl_theta_{i}"][idx] for i in range(_N_STATION)])
-            u_H = np.array([rec[f"upper_bl_H_{i}"][idx] for i in range(_N_STATION)])
-            l_H = np.array([rec[f"lower_bl_H_{i}"][idx] for i in range(_N_STATION)])
             cpmin = 1.0 - np.maximum(np.max(np.abs(u_ue), 0), np.max(np.abs(l_ue), 0)) ** 2
-            cl, cd, cm = take("CL"), take("CD"), take("CM")
-            xtr_t, xtr_b = take("Top_Xtr"), take("Bot_Xtr")
-            cp_bl = self._nxfoil_cp_bl(u_ue, l_ue, u_th, l_th, u_H, l_H)
-        else:  # nqfoil: direct outputs, no BL
-            cl, cd, cm = take("CL"), take("CD"), take("CM")
-            cpmin = take("Cpmin"); xtr_t, xtr_b = take("Top_Xtr"), take("Bot_Xtr")
-            cp_bl = None
         res = dict(cl=cl, cd=cd, cm=cm, cpmin=cpmin, alpha=np.asarray(alpha_req, float),
                    xtr_top=xtr_t, xtr_bot=xtr_b, xtp_top=xtp_u, xtp_bot=xtp_l,
                    Re=Re, M=0.0, N_crit=N_crit, N_panels=None)
-        if cp_bl is not None:
-            res["cp_data"], res["bl_data"] = cp_bl
-        else:
-            res["cp_data"] = res["bl_data"] = None
+        # cp_data/bl_data are NEVER read on the oso constraint path (grep confirms only
+        # _pack_res itself references them), yet building them -- the per-alpha nested-dict
+        # construction in _nxfoil_cp_bl plus the 6x32 BL-station gathers -- was ~1/3 of a
+        # generation's wall time. Serve them as None; a caller that needs the full cp/bl
+        # profile should use the real neuralfoil_wrapper.run fallback, not the cache.
+        res["cp_data"] = res["bl_data"] = None
         if scalar:
             for kk in ("cl", "cd", "cm", "cpmin", "alpha", "xtr_top", "xtr_bot"):
                 res[kk] = res[kk][0]
-            res["cp_data"] = res["cp_data"][0] if res["cp_data"] else None
-            res["bl_data"] = res["bl_data"][0] if res["bl_data"] else None
         return res
 
     def _nxfoil_cp_bl(self, u_ue, l_ue, u_th, l_th, u_H, l_H):

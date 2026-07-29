@@ -1,7 +1,7 @@
 """
 batch_geometry.py  —  GPU/CPU-batched airfoil GEOMETRY for a whole population in one shot.
 
-NEW FILE — does not modify anything. Wraps metafoil.kulfan_torch.kulfan_geometry (the batched,
+NEW FILE — does not modify anything. Wraps metafoil.core.kulfan_torch.kulfan_geometry (the batched,
 differentiable torch reimplementation of the Kulfan geometry) so you can evaluate a "run of
 geometry parameters" for many airfoils at once instead of building one metafoil.Kulfan object
 per airfoil. kulfan_torch is validated against the Kulfan class to ~1e-10 (area/moments) and
@@ -20,11 +20,11 @@ Notes
 -----
 * Batched: one Gauss-Legendre quadrature over all airfoils; ~2450x the per-object Kulfan class.
 * Differentiable: pass return_torch=True to keep autograd tensors (e.g. for constraint grads).
-* The GA's *constraint* set also needs curvature (d2zeta_dpsi2), the TE-cone (psi/zetaUpper/
-  zetaLower) and self-intersection height — those are pure CST-polynomial ops not yet in
-  kulfan_torch; until they're ported+validated, the GA driver keeps the real Kulfan for those
-  constraints (see batched_new_generation.py). This module covers the structural/thickness/LE
-  quantities, which is what a standalone geometry-parameter sweep needs.
+* TorchKulfan/TorchKulfanFactory expose the batched results through the same read-only surface
+  the oso constraint set uses, so `core_fitness_function(..., kulfan=factory)` computes all 31
+  constraints exactly as it does against the real Kulfan class. Quantities not covered by a
+  precomputed record (an off-population genome, or a psi grid other than the internal one) fall
+  back to a one-off kulfan_torch call, so nothing silently goes missing.
 """
 import numpy as np
 
@@ -34,7 +34,7 @@ def run_geometry_batch(uppers, lowers, tes=0.0, te_shift=0.0, N1=0.5, N2=1.0,
     """uppers/lowers: (P,8) arrays (or (8,)). tes/te_shift: scalar or (P,). One batched call.
     Returns a dict of (P,) numpy arrays (or torch tensors if return_torch)."""
     import torch
-    from metafoil.kulfan_torch import kulfan_geometry
+    from metafoil.core.kulfan_torch import kulfan_geometry
     up = np.atleast_2d(np.asarray(uppers, float)); lo = np.atleast_2d(np.asarray(lowers, float))
     P = max(len(up), len(lo))
     g = kulfan_geometry(up, lo, te_gap=tes, te_shift=te_shift, N1=N1, N2=N2, device=device)
@@ -61,7 +61,7 @@ def precompute_population_geometry(uppers, lowers, tes=0.0, n_pts=140, spacing="
     internal grid + thickness at the grid and the toothpick location). One record per UNIQUE
     genome (elitist repeats are computed once)."""
     import torch
-    from metafoil.kulfan_torch import kulfan_geometry, kulfan_surfaces, kulfan_surface_extrema
+    from metafoil.core.kulfan_torch import kulfan_geometry, kulfan_surfaces, kulfan_surface_extrema
     from metafoil.core.kulfan import _psi_grid
     U = np.atleast_2d(np.asarray(uppers, float)); L = np.atleast_2d(np.asarray(lowers, float))
     P = max(len(U), len(L))
@@ -101,30 +101,65 @@ def precompute_population_geometry(uppers, lowers, tes=0.0, n_pts=140, spacing="
     return registry, psi
 
 
+class TorchKulfanFactory:
+    """Builds :class:`TorchKulfan` instances bound to one precomputed geometry registry.
+
+    Call it exactly like the ``Kulfan`` class -- ``factory(TE_gap=...)`` -- and pass it
+    to ``core_fitness_function(..., kulfan=factory)``.
+
+    The registry used to live in class attributes on ``TorchKulfan`` and be swapped in
+    via an ``install_registry`` classmethod before each case was evaluated. That made
+    the geometry a process-wide global: two cases could not be in flight at once, and
+    forgetting to reinstall silently evaluated a case against another case's geometry.
+    Binding the registry to a factory instance removes that hazard.
+    """
+
+    def __init__(self, registry, psi, toothpick_location=None, N1=0.5, N2=1.0):
+        self.registry = registry
+        self.psi = np.asarray(psi, float)
+        self.toothpick_location = toothpick_location
+        self.N1 = N1
+        self.N2 = N2
+
+    def __call__(self, TE_gap=0.0, **kw):
+        return TorchKulfan(self, TE_gap)
+
+
 class TorchKulfan:
-    """Read-only drop-in for metafoil.core.kulfan.Kulfan on the oso constraint path, backed by a
-    precomputed batched-geometry record (set via install_registry). Constructed as Kulfan(TE_gap=)
-    then .upper/lowerCoefficients assigned — exactly how core_fitness_function uses it."""
-    _REGISTRY = {}; _PSI = None; _TOOTH = None; _N1 = 0.5; _N2 = 1.0
+    """Read-only drop-in for metafoil.core.kulfan.Kulfan on the oso constraint path,
+    backed by a precomputed batched-geometry record. Constructed via
+    :class:`TorchKulfanFactory` as ``factory(TE_gap=...)``, then ``.upper/lowerCoefficients``
+    assigned -- exactly how core_fitness_function uses the real Kulfan."""
 
-    @classmethod
-    def install_registry(cls, registry, psi, toothpick_location=None):
-        cls._REGISTRY = registry; cls._PSI = np.asarray(psi, float); cls._TOOTH = toothpick_location
+    def __init__(self, factory, TE_gap=0.0):
+        self._f = factory
+        self._te = float(TE_gap); self._u = None; self._l = None; self._rec = None
+        self._chord = 1.0
 
-    def __init__(self, TE_gap=0.0, **kw):
-        self._te = float(TE_gap); self._u = None; self._l = None; self._rec = None; self._chord = 1.0
+    @property
+    def _REGISTRY(self):
+        return self._f.registry
+
+    @property
+    def _PSI(self):
+        return self._f.psi
+
+    @property
+    def _TOOTH(self):
+        return self._f.toothpick_location
 
     def _bind(self):
         if self._u is not None and self._l is not None and self._rec is None:
-            self._rec = self._REGISTRY.get(_key(self._u, self._l, self._te))
+            self._rec = self._f.registry.get(_key(self._u, self._l, self._te))
             if self._rec is None:                       # off-population genome: compute one-off
                 self._rec = self._compute_one()
         return self._rec
 
     def _compute_one(self):
         reg, _ = precompute_population_geometry(self._u[None, :], self._l[None, :], self._te,
-                                                n_pts=len(self._PSI), toothpick_location=self._TOOTH,
-                                                N1=self._N1, N2=self._N2)
+                                                n_pts=len(self._f.psi),
+                                                toothpick_location=self._f.toothpick_location,
+                                                N1=self._f.N1, N2=self._f.N2)
         return next(iter(reg.values()))
 
     # coefficient setters/getters
@@ -171,15 +206,16 @@ class TorchKulfan:
             return r["thickness_grid"]
         if self._TOOTH is not None and abs(float(psi) - float(self._TOOTH)) < 1e-12 and r["tooth"] is not None:
             return r["tooth"]
-        from metafoil.kulfan_torch import kulfan_surfaces
+        from metafoil.core.kulfan_torch import kulfan_surfaces
         s = kulfan_surfaces(self._u, self._l, [float(psi)], te_gap=self._te, with_d2=False)
         return float((s["zeta_upper"] - s["zeta_lower"]).reshape(-1)[0])
     def d2zeta_dpsi2(self, psi, side="upper"):
         r = self._bind(); pin = np.asarray(psi, float)
         if pin.shape == self._PSI[1:-1].shape and np.allclose(pin, self._PSI[1:-1]):
             return r["d2_upper_int"] if side == "upper" else r["d2_lower_int"]
-        from metafoil.kulfan_torch import kulfan_surfaces
-        s = kulfan_surfaces(self._u, self._l, pin, te_gap=self._te, N1=self._N1, N2=self._N2)
+        from metafoil.core.kulfan_torch import kulfan_surfaces
+        s = kulfan_surfaces(self._u, self._l, pin, te_gap=self._te, N1=self._f.N1,
+                            N2=self._f.N2)
         return (s["d2zeta_upper"] if side == "upper" else s["d2zeta_lower"]).reshape(-1).detach().cpu().numpy()
 
 

@@ -315,9 +315,9 @@ def crossoverChromosomes(parent1, parent2, Ncrossovers=1):
         pl2 = c2
     return "".join(c1), "".join(c2)
     
-def breedDesignVectors(x1, x2, normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=3, probabilityOfMutation=0.10, N_mutations=1, mutation_mode='legacy'):
+def breedDesignVectors(x1, x2, normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=3, probabilityOfMutation=0.10, N_mutations=1, mutation_mode='corrected'):
     # normalizationVector = [v.guess.to(v.units).magnitude for v in formulation.variables_only]
-    # mutation_mode: 'legacy' (default, reproduces published OSO runs) or 'corrected'
+    # mutation_mode: 'corrected' (default, true bit flip) or 'legacy' (reproduces published OSO runs)
     # (true bit flip). The default is deliberately 'legacy' so that existing configs
     # keep their behaviour; new runs must opt in explicitly.
     _mutate = _get_mutation_operator(mutation_mode)
@@ -360,10 +360,10 @@ def breedDesignVectorsParallel(ipts):
         N_mutations = ipts['N_mutations']
     else:
         N_mutations = 1
-    # Mutation operator selection. Defaults to 'legacy' so that any existing config
-    # reproduces published OSO behaviour unchanged; new run scripts pass
-    # mutation_mode='corrected' explicitly. See mutateChromosome() for why.
-    mutation_mode = ipts.get('mutation_mode', 'legacy')
+    # Mutation operator selection. Defaults to 'corrected' (true bit flip) -- the right
+    # thing for all work. Pass mutation_mode='legacy' explicitly only to reproduce
+    # previously published OSO runs. See mutateChromosome() for why.
+    mutation_mode = ipts.get('mutation_mode', 'corrected')
     # formulation = ipts['formulation']
     children = breedDesignVectors(x1,x2,normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=Ncrossovers, probabilityOfMutation=probabilityOfMutation, N_mutations=N_mutations, mutation_mode=mutation_mode)
     return children
@@ -640,40 +640,18 @@ def NSGA_sort(dta,Nvars,Nobj):
     if n == 0:
         return dta
     
-    # Initialize domination counts and dominated solutions
-    domination_count = np.zeros(n, dtype=int)  # Number of solutions that dominate this solution
-    dominated_solutions = [[] for _ in range(n)]  # Solutions dominated by this solution
-    
-    # For each solution, find which solutions it dominates and is dominated by
-    for i in range(n):
-        for j in range(i + 1, n):  # Only check upper triangle to avoid double work
-            # Check if solution i dominates solution j
-            i_dominates_j = True
-            j_dominates_i = True
-            i_strictly_better = False
-            j_strictly_better = False
-            
-            # Compare all objectives
-            for k in range(Nobj):
-                obj_col = Nvars + k
-                if dta[i][obj_col] > dta[j][obj_col]:
-                    i_dominates_j = False
-                elif dta[i][obj_col] < dta[j][obj_col]:
-                    i_strictly_better = True
-                    
-                if dta[j][obj_col] > dta[i][obj_col]:
-                    j_dominates_i = False
-                elif dta[j][obj_col] < dta[i][obj_col]:
-                    j_strictly_better = True
-            
-            # i dominates j if i is <= in all objectives and < in at least one
-            if i_dominates_j and i_strictly_better:
-                dominated_solutions[i].append(j)
-                domination_count[j] += 1
-            # j dominates i if j is <= in all objectives and < in at least one
-            elif j_dominates_i and j_strictly_better:
-                dominated_solutions[j].append(i)
-                domination_count[i] += 1
+    # Domination structure -- vectorized. Identical semantics to the original
+    # O(n^2 * Nobj) triple Python loop, including its inf/NaN behaviour (it uses the
+    # same >/< comparisons, not <=): solution i dominates j iff NO objective of i is
+    # strictly worse (greater) than j's AND at least one is strictly better (less).
+    # That double loop was ~1/3 of a generation's wall time; this is a few broadcasts.
+    O = np.asarray(dta[:, Nvars:Nvars + Nobj], dtype=float)     # (n, Nobj) objective block
+    gt = O[:, None, :] > O[None, :, :]           # gt[i,j,k]: obj k of i strictly worse than j
+    lt = O[:, None, :] < O[None, :, :]           # lt[i,j,k]: obj k of i strictly better than j
+    dom = (~gt).all(axis=2) & lt.any(axis=2)     # dom[i,j] = i dominates j
+    np.fill_diagonal(dom, False)
+    domination_count = dom.sum(axis=0).astype(int)             # # of solutions dominating j
+    dominated_solutions = [np.flatnonzero(dom[i]).tolist() for i in range(n)]
     
     # Find all solutions in the first front (not dominated by anyone)
     current_front = []

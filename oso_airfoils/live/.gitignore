@@ -1,0 +1,7 @@
+# Run artifacts -- regenerated on every launch, never committed.
+frames/
+state.json
+selection.json
+savepath.json
+_live_case.yaml
+*.log

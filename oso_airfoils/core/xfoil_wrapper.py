@@ -18,6 +18,8 @@ alias for ``N_panels_kulfan``, and the ``N_panels`` / ``N_panels_xfoil`` keys th
 """
 
 import metafoil.xfoil as _xfoil
+
+from oso_airfoils.core.result_schema import to_oso_schema
 from metafoil.xfoil.wrappers import xfoil_fileio as _xfoil_fileio
 
 
@@ -93,6 +95,7 @@ def run(mode,
 
     # Reconcile return keys with the oso contract / core.sweep consumer, which
     # reads res['N_panels'] and (historically) res['N_panels_xfoil'].
+    res = to_oso_schema(res)
     res.setdefault('N_panels_kulfan', N_panels_kulfan)
     res['N_panels'] = res.get('N_panels_kulfan', N_panels_kulfan)
     res.setdefault('N_panels_xfoil', N_panels_xfoil)

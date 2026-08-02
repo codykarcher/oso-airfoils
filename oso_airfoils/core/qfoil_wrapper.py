@@ -18,6 +18,8 @@ alias for ``N_panels_kulfan``, and the ``N_panels`` / ``N_panels_qfoil`` keys th
 """
 
 import metafoil.qfoil as _qfoil
+
+from oso_airfoils.core.result_schema import to_oso_schema
 from metafoil.qfoil.wrappers import qfoil_fileio as _qfoil_fileio
 
 
@@ -90,6 +92,7 @@ def run(mode,
             force_list=force_list,
         )
 
+    res = to_oso_schema(res)
     res.setdefault('N_panels_kulfan', N_panels_kulfan)
     res['N_panels'] = res.get('N_panels_kulfan', N_panels_kulfan)
     res.setdefault('N_panels_qfoil', N_panels_qfoil)

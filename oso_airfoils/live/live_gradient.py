@@ -294,6 +294,20 @@ def main(argv=None):
                          "best is kept. Dropping to 2 halves the runtime and visibly\n"
                          "degrades the rough end -- do not.")
     ap.add_argument("--locator-starts", type=int, default=4)
+    # epsilon-sweep layout -- same names/semantics as pareto_gold, so a live run
+    # and a batch run of the same case lay the front out identically.
+    ap.add_argument("--eps-cosine-rough", action="store_true",
+                    help="space the epsilon sweep with a cosine cluster whose DENSE end is on "
+                         "the rough side (near rough_max), instead of uniform. Endpoints "
+                         "preserved. (== --eps-cosine-blend 1.0)")
+    ap.add_argument("--eps-cosine-blend", type=float, default=None, metavar="W",
+                    help="linear blend of uniform and rough-dense-cosine eps spacing: "
+                         "eps = (1-W)*uniform + W*cosine, W in [0,1]. W=0 uniform, W=1 full "
+                         "cosine. Overrides --eps-cosine-rough when given.")
+    ap.add_argument("--eps-equality", action="store_true",
+                    help="pin each epsilon point to its floor with an EQUALITY (LoD_rough==eps) "
+                         "instead of the default inequality, so several eps cannot collapse onto "
+                         "the rough corner.")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--max-iter", type=int, default=300)
     ap.add_argument("--proj-max-iter", type=int, default=60)
@@ -319,6 +333,13 @@ def main(argv=None):
         args.model = "xxlarge" if args.tool == "nqfoil" else "xxxlarge"
 
     params, cfg = pg.load_family_params(args.thickness, args.oso_root)
+    # Mirror pareto_gold's wiring. These land in `params`, which goes into wcfg and
+    # so reaches the pool workers -- eps_floor_equality is read by constraint_list
+    # inside the worker, the spacing keys by eps_grid here in the parent.
+    params['eps_floor_equality'] = bool(args.eps_equality)
+    params['eps_cosine_rough'] = bool(args.eps_cosine_rough)
+    if args.eps_cosine_blend is not None:
+        params['eps_cosine_blend'] = float(args.eps_cosine_blend)
     seed_path = pg.family_dat(args.thickness, args.oso_root)
     from oso_airfoils.optimization.airfoil_io import load_airfoil_dat
     from metafoil.core.kulfan_geometry import fit_kulfan_to_coordinates
@@ -435,7 +456,11 @@ def main(argv=None):
 
     # ---- phase 2: interior sweep, streaming --------------------------------
     M, K = args.n + 2, args.sweep_starts
-    eps_levels = np.linspace(r_lo, r_hi, M)
+    # Shared with pareto_gold so the live front and the batch front are laid out
+    # identically. This was a private np.linspace here, which meant the
+    # uniform/cosine blend applied to the batch sweep only and the two produced
+    # differently-spaced fronts from the same settings, silently.
+    eps_levels = pg.eps_grid(r_lo, r_hi, M, params)
     state.begin_sweep(eps_levels)
 
     ptasks = []

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""plot_sweeps.py — Plot all data from sweeps/*.json.
+"""plot_sweeps.py — Plot all data from data/<family>/performance_data/*.json.
 
-Generates (all saved to sweeps/):
-  1. Per-airfoil polars PNG for every JSON in sweeps/
+Generates (all saved to data/<family>/polar_plots/):
+  1. Per-airfoil polars PNG for every performance JSON in the target families
      XFoil + NeuralFoil, clean (Ncrit=9) + rough (Ncrit=3), with Cpmin.
 
   2. Per-thickness comparison PNG for each OSO-2026-HT1 member.
      Shows the HT1 airfoil alongside similarly-thick airfoils (±1.5 %)
-     from all other families present in sweeps/.  XFoil, clean + rough.
+     from all other families present in the data tree.  XFoil, clean + rough.
 
 Run:
     python plot_sweeps.py
@@ -26,8 +26,17 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-# Script lives inside sweeps/ — all output goes to the same directory
-SWEEPS_DIR = pathlib.Path(__file__).resolve().parent
+# Sweep data lives in the data tree (data/<family>/performance_data/*.json); plots
+# are written next to it in data/<family>/polar_plots/. FAMILIES matches the
+# directory names under data/ and the list in sweep_families.py.
+DATA_ROOT = pathlib.Path(__file__).resolve().parent.parent / 'data'
+FAMILIES  = ['oso_2026_ht1', 'mhkf1', 'ffa', 'du', 'riso_b']
+
+
+def _plot_dir(family):
+    d = DATA_ROOT / family / 'polar_plots'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 # ── condition constants ────────────────────────────────────────────────────────
 RE            = 1.5e6
@@ -58,12 +67,18 @@ from oso_airfoils.core.data_utils import _DEFAULT_AFL_ROOT
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _load_sweeps() -> dict[str, dict]:
-    """Return {stem: json_doc} for all JSONs in SWEEPS_DIR."""
+    """Return {stem: json_doc} for every performance JSON in the target families."""
     docs = {}
-    for jf in sorted(SWEEPS_DIR.glob('*.json')):
-        with open(jf) as fh:
-            docs[jf.stem] = json.load(fh)
+    for family in FAMILIES:
+        for jf in sorted((DATA_ROOT / family / 'performance_data').glob('*.json')):
+            with open(jf) as fh:
+                docs[jf.stem] = json.load(fh)
+            _FAMILY_OF[jf.stem] = family
     return docs
+
+
+#: stem -> family, populated by _load_sweeps so plots land beside their data.
+_FAMILY_OF: dict[str, str] = {}
 
 
 def _get_tau(doc: dict, stem: str) -> float | None:
@@ -137,7 +152,7 @@ def plot_individual(docs: dict[str, dict]) -> None:
 
     for stem, doc in docs.items():
         records  = doc.get('runs', [])
-        out_path = SWEEPS_DIR / f'{stem}_polar.png'
+        out_path = _plot_dir(_FAMILY_OF[stem]) / f'{stem}_polar.png'
 
         # Determine which tools actually have complete data
         tools = _available_tools(records, RE, TURB_BOTH, ['xfoil', 'neuralfoil'])
@@ -241,7 +256,7 @@ def plot_ht1_comparisons(docs: dict[str, dict]) -> None:
         if not tools:
             tools = ['xfoil']   # fallback
 
-        out_path = SWEEPS_DIR / f'compare_T{tau_pct:02d}.png'
+        out_path = _plot_dir('oso_2026_ht1') / f'compare_T{tau_pct:02d}.png'
 
         tau_strs  = ', '.join(
             f'{s} ({tau_map.get(s, 0):.3f})'
@@ -274,16 +289,16 @@ def plot_ht1_comparisons(docs: dict[str, dict]) -> None:
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    if not SWEEPS_DIR.is_dir():
-        print(f'ERROR: sweeps/ directory not found at {SWEEPS_DIR}')
+    if not DATA_ROOT.is_dir():
+        print(f'ERROR: data directory not found at {DATA_ROOT}')
         sys.exit(1)
 
     docs = _load_sweeps()
     if not docs:
-        print(f'No JSON files found in {SWEEPS_DIR}')
+        print(f'No performance JSON files found under {DATA_ROOT}')
         sys.exit(1)
 
-    print(f'Loaded {len(docs)} sweep JSONs from {SWEEPS_DIR}')
+    print(f'Loaded {len(docs)} performance JSONs from {DATA_ROOT}')
 
     plot_individual(docs)
     plot_ht1_comparisons(docs)

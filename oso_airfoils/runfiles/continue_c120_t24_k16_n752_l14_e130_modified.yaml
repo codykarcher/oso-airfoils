@@ -50,7 +50,7 @@ neuralfoil_model                          : "xxxlarge"
 # Unlikely to change
 # ------------------
 # Fundamental parameters
-continuation_file                         : "/mnt/c/Users/Cody Karcher/Dropbox/research/oso-airfoils/oso_airfoils/runfiles1/c120_t24_k16_n752_l14_e130__2026_07_14_02-10-1811_modified/population_c120_t24_k16_n752_l14_e130_g264.json"
+continuation_file                         : "oso_airfoils/data/cases_111_to_120/case_120/c120_t24_k16_n752_l14_e130__2026_07_14_02-10-1811_modified/population_c120_t24_k16_n752_l14_e130_g264.json"
 continuation_file_overwrite               : false
 
 # Geometry Parameters

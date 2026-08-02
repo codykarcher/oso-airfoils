@@ -55,8 +55,17 @@ NF_MODEL      = 'xxlarge'
 XFOIL_TIMELIM = 20           # seconds per alpha call
 KULFAN_ORDER  = 8
 
-HERE       = pathlib.Path(__file__).resolve().parent
-SWEEPS_DIR = HERE / 'sweeps'
+HERE      = pathlib.Path(__file__).resolve().parent
+# Sweep results are family performance data, so they are written straight into the
+# data tree (data/<family>/performance_data/<airfoil>.json) rather than into a
+# separate runfiles/sweeps/ staging folder that then had to be merged by hand.
+DATA_ROOT = HERE.parent / 'data'
+
+
+def _perf_dir(family):
+    d = DATA_ROOT / family / 'performance_data'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 # ── Imports from oso_airfoils ──────────────────────────────────────────────────
 from oso_airfoils.core.data_utils     import _DEFAULT_AFL_ROOT
@@ -190,8 +199,7 @@ def _run_task(task: dict, afl) -> list[dict]:
 
 def main():
     if _rank == 0:
-        os.makedirs(SWEEPS_DIR, exist_ok=True)
-        print(f"Output directory : {SWEEPS_DIR}", flush=True)
+        print(f"Output directory : {DATA_ROOT}/<family>/performance_data", flush=True)
 
     airfoils = _collect_airfoils()
     if _rank == 0:
@@ -257,7 +265,14 @@ def main():
     # Write one JSON per airfoil
     written = 0
     for (family, stem), records in sorted(grouped.items()):
-        merged, n_added, _, _, _ = _merge_runs([], records)
+        out_path = _perf_dir(family) / f'{stem}.json'
+        # Merge into the existing performance file if there is one, so a sweep adds
+        # runs rather than replacing everything already recorded for this airfoil.
+        existing = []
+        if out_path.is_file():
+            with open(out_path) as fh:
+                existing = json.load(fh).get('runs', [])
+        merged, n_added, _, _, _ = _merge_runs(existing, records)
         print(f"  {stem:40s}  {n_added} records", flush=True)
 
         doc: dict = {'airfoil_id': stem, 'geometry': None, 'runs': merged}
@@ -269,12 +284,11 @@ def main():
             except Exception as e:
                 print(f"  WARNING: geometry failed for {stem}: {e}", flush=True)
 
-        out_path = SWEEPS_DIR / f'{stem}.json'
         with open(out_path, 'w') as fh:
             json.dump(doc, fh, indent=2, cls=_NumpyEncoder)
         written += 1
 
-    print(f"\nDone — wrote {written} JSON files to {SWEEPS_DIR}", flush=True)
+    print(f"\nDone — wrote {written} JSON files under {DATA_ROOT}", flush=True)
 
 
 if __name__ == '__main__':

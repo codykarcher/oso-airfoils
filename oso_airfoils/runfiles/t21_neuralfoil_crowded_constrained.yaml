@@ -127,7 +127,13 @@ alpha_min_extend                          : -10
 N_crossovers                              : 3
 probability_of_mutation                   : 0.3
 maximum_parent_fraction                   : 0.7
-front1_cap_fraction                       : 0.5
+front1_cap_fraction                       : 0.8
+mutation_mode                             : corrected
 N_mutations                               : 4
 
-
+# This case is the constraint-domination variant. It used to require its own
+# runner (runcases2/runner_constrained.py, which imported a module that rebound
+# NSGA_sort process-wide); it is now just a parameter, so the case runs through
+# the normal entry point:
+#     python -m oso_airfoils.optimization t21_neuralfoil_crowded_constrained.yaml
+nsga_sort                                 : "constrained"

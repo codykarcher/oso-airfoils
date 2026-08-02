@@ -1,3 +1,25 @@
+Core
+----
+
+Solver wrappers and data utilities.
+
+The aerodynamic solvers themselves live in the companion **metafoil** package. The
+wrappers here are thin adapters that preserve this project's call signature and return
+contract:
+
+| Module | Role |
+| :----- | :--- |
+| `xfoil_wrapper.py` | Dispatches to `metafoil.xfoil` (in-memory, alpha mode) or `metafoil.xfoil.wrappers.xfoil_fileio` (CL mode, flaps, explicit binary path) |
+| `qfoil_wrapper.py` | Same split over `metafoil.qfoil` |
+| `neuralfoil_wrapper.py` | NeuralFoil surrogate |
+| `sweep.py`, `ingest_data.py`, `data_utils.py`, `airfoil_family.py` | Sweep driving, performance-data ingestion/merging, and lookup |
+
+Removed in favour of metafoil: the `*_inmem_wrapper.py` family (`xfoil`, `qfoil`, `cfoil`,
+`cxfoil`, `cqfoil`) and `_xfoil_inmem_base.py`, which loaded `.so` files through a local
+CMPLXFOIL checkout, plus `cfoil_wrapper.py` (superseded by `metafoil.cxfoil`, which also
+provides complex-step gradients). Use metafoil directly for those.
+
+
 Image Processing
 ----------------
 

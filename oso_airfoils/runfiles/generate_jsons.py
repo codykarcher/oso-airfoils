@@ -38,6 +38,16 @@ default_dict = {
     "percent_delta_cl_from_roughness_threshold"  :  0.10,
     "percent_LoD_falloff_threshold"              :  0.15,
     "alpha_falloff_offset"                       :  1.0,
+    # --- constraints ported from the gradient optimizer (thresholds); each is OFF
+    #     until its *_weighting below is set non-None. See core_fitness_function. ---
+    "rough_slope_ratio_min"                      :  0.50,   # rough dCL/da @design >= this x @zero-lift
+    "slope_ratio_h"                              :  0.5,    # central-difference half-step (deg)
+    "slope_ratio_alpha_min"                      :  -14.0,  # rough sweep must reach here to bracket zero-lift +/- h
+    "alpha_falloff_offset_2"                     :  2.0,    # wider (2nd) L/D-falloff offset (deg)
+    "percent_LoD_falloff_threshold_2"            :  0.30,   # tolerance for the wider falloff
+    "rough_xtr_max"                              :  0.05,   # rough reported Top/Bot_Xtr must stay <= forced trip
+    "xtr_slope_threshold"                        :  0.30,   # max forward march of clean upper transition over +offset
+    "xtr_slope_offset"                           :  1.0,    # window (deg) above design for the transition-slope test
     "max_thickness_loc"                          :  0.275,
     "max_thickness_loc_upper"                    :  0.275,
     "max_thickness_loc_lower"                    :  0.275,
@@ -61,6 +71,11 @@ default_dict = {
     "cl_max_limit_rough_weighting"               :  1.0e+4,
     "delta_cl_from_roughness_weighting"          :  1.0e+4,
     "LoD_falloff_weighting"                      :  50.0,
+    # --- ported gradient constraints (TOGGLES): None/0 => off, set a weight to enable ---
+    "slope_ratio_weighting"                      :  None,   # rough lift-slope ratio (surrogate-trust)
+    "LoD_falloff_2_weighting"                    :  None,   # 2nd, wider L/D-falloff
+    "rough_xtr_cap_weighting"                    :  None,   # rough transition-location cap (needs solver xtr)
+    "transition_slope_weighting"                 :  None,   # clean upper transition-slope (needs solver xtr)
     "ixx_weighting"                              :  1.0e+6,
     "iyy_weighting"                              :  1.0e+4,
     "izz_weighting"                              :  1.0e+4,
@@ -109,8 +124,10 @@ default_dict = {
     "N_crossovers"                               :  3,
     "probability_of_mutation"                    :  0.3,
     "maximum_parent_fraction"                    :  0.7,
-    "front1_cap_fraction"                        :  0.5,
+    "front1_cap_fraction"                        :  0.8,
+    "nsga_sort"                                  :  "constrained",
     "N_mutations"                                :  4,
+    "mutation_mode"                              :  "corrected",   # true bit flip (use 'legacy' only to reproduce old published runs)
 
 }
 

@@ -50,6 +50,10 @@ neuralfoil_model                          : "xxxlarge"
 # Unlikely to change
 # ------------------
 # Fundamental parameters
+# NOTE: this continuation points at the UNMODIFIED t24 run, which was never
+# committed to this repo (only the "_modified" run is present, and it starts at
+# generation 264). The original WSL path is kept below as a record; update it to
+# a snapshot that exists before using this file.
 continuation_file                         : "/mnt/c/Users/Cody Karcher/Dropbox/research/oso-airfoils/oso_airfoils/runfiles1/c120_t24_k16_n752_l14_e130__2026_07_14_02-10-1811/population_c120_t24_k16_n752_l14_e130_g113.json"
 continuation_file_overwrite               : false
 

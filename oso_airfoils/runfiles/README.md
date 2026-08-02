@@ -10,21 +10,54 @@ A typical workflow is as follows:
    - `run_001.json`–`run_008.json` — full xfoil-based runs, one per thickness (tau=0.15–0.36)
    - `run_nf_001.json`–`run_nf_008.json` — full neuralfoil-based runs, one per thickness
    - `example.yaml` — heavily annotated reference file documenting every available parameter
-2. Run the optimization by passing the input file to `common_runner.py`:
-   - **xfoil** (HPC, ~188 cores): `mpirun -n 188 python -m mpi4py common_runner.py run_001.json`
-   - **neuralfoil** (HPC, ~96 cores): `mpirun -n 96 python -m mpi4py common_runner.py run_nf_001.json`
-   - **personal machine**: `mpirun -n 8 python -m mpi4py common_runner.py quickstart.json`
+2. Run the optimization by passing the input file to `python -m oso_airfoils.optimization`:
+   - **xfoil** (HPC, ~188 cores): `mpirun -n 188 python -m mpi4py -m oso_airfoils.optimization run_001.json`
+   - **neuralfoil** (HPC, ~96 cores): `mpirun -n 96 python -m mpi4py -m oso_airfoils.optimization run_nf_001.json`
+   - **neuralfoil on one GPU**: `python -m oso_airfoils.optimization run_nf_001.json`
+   - **personal machine**: `mpirun -n 8 python -m mpi4py -m oso_airfoils.optimization quickstart.json`
 3. Monitor per-generation Pareto front output printed to stdout.  Population snapshots are saved every generation into a timestamped output folder.
 4. To regenerate all pre-built JSON files and batch shell scripts, run `generate_jsons.py` (xfoil) or `generate_jsons_nf.py` (neuralfoil).  These scripts also regenerate `all_run.sh` and `runcases.txt`.
 5. To batch-submit all thickness cases at once, use `all_run.sh` (xfoil) or `all_run_nf.sh` (neuralfoil).
 
+Superseded run configurations are archived in `old_runfiles/`, one folder per case number
+(`old_runfiles/wt_airfoil_case_<N>/`).
+
 A personal laptop or computer running neuralfoil with N_k=8 and N_pop=200 will finish in roughly 24–48 hours and produce a reasonable result.  Using xfoil requires considerably more cores (128+) to run in a practical time.
+
+
+Execution Modes
+---------------
+
+`tool` chooses *what physics* is evaluated; `execution` chooses *how* those evaluations are distributed.  The two are independent — changing one never requires changing the other.
+
+| Mode | Requires | Description |
+| :--- | :------- | :---------- |
+| `serial` | — | One process, one airfoil at a time.  Good for debugging and for small neuralfoil cases on a laptop. |
+| `mpi` | `mpirun` | Each rank evaluates its stride of the generation.  The only mode available for `xfoil` and `qfoil`, which shell out to an external solver per airfoil. |
+| `gpu-batched` | `tool: neuralfoil`, CUDA | The whole generation becomes a single batched forward through the surrogate net, plus one batched geometry precompute.  Any `N_k` works: the design vector is refit to the net's 8-coefficients-per-surface order on the way in (exactly, and batched), while constraints keep the original order.  Single-process by design — do not launch it under `mpirun`. |
+
+With the default `execution: auto`, the mode is chosen as: MPI if launched under an MPI launcher with more than one rank; otherwise the batched GPU path if the tool is a surrogate and CUDA is available; otherwise serial.
+
+Illegal combinations are rejected at startup rather than silently downgraded — batching a non-surrogate tool, running the single-process GPU path under `mpirun`, or running `serial` under `mpirun`.
+
+Passing **several case files at once** runs them in lockstep, sharing one batched forward per generation across the whole fleet.  This feeds a large GPU one saturating matmul instead of many small ones:
+
+```
+python -m oso_airfoils.optimization t21_neuralfoil.yaml t24_neuralfoil.yaml t27_neuralfoil.yaml --max-pulse 40
+```
+
+Each case still writes its own output folder exactly as a single-case run does.
+
+Surrogate settings may be set per case (`surrogate_backend`, `surrogate_device`, `surrogate_cuda_graph`, `neuralfoil_model`) or overridden on the command line (`--backend`, `--device`, `--cuda-graph`, `--model`, `--max-pulse`).
+
+Full details are in `oso_airfoils/optimization/README.md`.
 
 
 Output
 ------
 
-Each run creates an output folder under `outfile_leader` (default: `./`) named:
+Completed runs are archived under `oso_airfoils/data/cases_<lo>_to_<hi>/case_<N>/`, filed by
+`case_number`.  A live run creates its output folder under `outfile_leader` (default: `./`) named:
 
 ```
 c{case}_t{tau*100}_k{N_k}_n{N_pop}_l{CL*10}_e{Re/1e5}__{timestamp}/
@@ -44,13 +77,65 @@ Each population snapshot is a JSON file containing:
   - `K_lower` — list of N_k/2 Kulfan lower-surface coefficients
   - Computed quantities per member (objectives, constraint violations, aerodynamic metrics): `obj1`, `obj2`, `con_tag`, `alpha_design`, `LoD_clean_at_design`, `LoD_rough_at_design`, `stall_margin_clean`, `stall_margin_rough`, `lift_margin_clean`, `delta_cl_from_roughness`, `Ixx`, `Iyy`, `Izz`, `A`, `cpmin`, constraint tags, and `pareto_index`
 
-The `pareto_index` field equals 1 for Pareto-front members and higher integers for lower-ranked fronts.  Each generation, the runner prints a table of the top Pareto-front members sorted by clean L/D.
+The `pareto_index` field equals 1 for Pareto-front members and higher integers for lower-ranked fronts.
+
+### Rejected members
+
+An airfoil that cannot be evaluated is *rejected* rather than scored: its `obj1` and
+`obj2` are `Infinity`, `con_tag` is `false`, and every reported/constraint field is
+zero.  For those members the **`alpha_design` field holds a rejection code, not an
+angle of attack**:
+
+| Code | Meaning |
+| ---: | :------ |
+| `-10` | Self-intersecting geometry (negative thickness somewhere) |
+| `-20` | Upper Kulfan coefficient magnitude > 2 |
+| `-30` | Lower Kulfan coefficient magnitude > 2 |
+| `-60` | Rough sweep did not reach `target_alpha` (high alphas did not converge) |
+| `-70` | No stall peak found in the sweep |
+| `-80` | Design CL is above the airfoil's CL_max |
+| `-85` | Design CL is below the start of the (extended) sweep |
+| `-90` | Exception during evaluation, or a NaN in the reported values |
+
+The codes are deliberately absurd as angles — a design alpha of −80° is self-evidently
+not a real answer — so a garbage row announces itself rather than blending in with
+plausible ones.
+
+**When post-processing, mask on `obj1 == Infinity` (or `con_tag`) before computing
+statistics on `alpha_design`.**  Averaging the raw column mixes status codes with real
+angles and produces a meaningless number.  On a random seed population, where a large
+fraction of members are rejected (typically `-80`: a random shape rarely reaches a
+design CL of 1.5), that mistake makes the mean design alpha look strongly negative.
+Rejection is expected early on and is exactly what the GA drives out — feasible
+members typically appear within ~10 generations.  Each generation, the runner prints a table of the top Pareto-front members sorted by clean L/D.
+
+
+Folder Layout
+-------------
+
+This folder holds run *configurations* and the scripts that generate them.  Run *outputs*
+and airfoil performance data live under `oso_airfoils/data/`.
+
+| Path | Contents |
+| :--- | :------- |
+| `t<tau>_<tool>.yaml` | One case per thickness per solver (`xfoil`, `qfoil`, `neuralfoil`) |
+| `base1.yaml` | Annotated reference config documenting every parameter |
+| `generate_yamls.py` | Regenerates the per-thickness YAML set and `run_all.sh` |
+| `generate_jsons.py`, `generate_jsons_nf.py` | Older JSON-format generators |
+| `sweep_families.py` | Sweeps reference airfoil families, writing into `data/<family>/performance_data/` |
+| `plot_sweeps.py` | Plots those sweeps into `data/<family>/polar_plots/` |
+| `old_runfiles/` | Archive of superseded run configs, one folder per case number |
+
+The previously separate `runfiles1/` and `runcases2/` folders have been merged into this
+one, and the `sweeps/` staging folder is gone: `sweep_families.py` now writes airfoil
+performance data straight into the data tree instead of into a folder that had to be
+merged by hand afterwards.
 
 
 Input File Format
 -----------------
 
-`common_runner.py` accepts either a `.json` or `.yaml`/`.yml` input file.  Every parameter available is documented with inline comments in `example.yaml`; that file is the authoritative reference.  The sections below summarize the parameters by category.
+`python -m oso_airfoils.optimization` accepts either a `.json` or `.yaml`/`.yml` input file.  Every parameter available is documented with inline comments in `example.yaml`; that file is the authoritative reference.  The sections below summarize the parameters by category.
 
 **Required parameters:** `case_number`, `tau`, `N_k`, `N_pop`, `N_generations`, `CL`, `Re`, `tool`, and all constraint weightings.  The pre-generated JSON files already contain a complete, valid set of every required parameter.
 
@@ -67,7 +152,8 @@ Core Optimization Parameters
 | `N_generations` | Number of GA generations to run before terminating.  Recommend ~1000 for production runs. |
 | `CL` | Design-point lift coefficient (see defaults table below) |
 | `Re` | Design-point Reynolds number (see defaults table below) |
-| `tool` | Aerodynamic solver: `"xfoil"` or `"neuralfoil"` |
+| `tool` | Aerodynamic solver: `"xfoil"`, `"qfoil"` or `"neuralfoil"` |
+| `execution` | How evaluations are distributed: `"auto"` (default), `"serial"`, `"mpi"`, or `"gpu-batched"`.  See the Execution Modes section below. |
 | `outfile_leader` | Directory where the output folder is created (default: `"./"`) |
 | `xfoil_path` | Path to the xfoil executable (default: searches `$PATH`) |
 | `xfoil_tempfile_path_leader` | Path prefix for xfoil temp files (default: `"t_"`) |
@@ -218,8 +304,10 @@ Genetic Algorithm Parameters
 | `N_crossovers` | 3 | Number of crossover points during chromosome recombination; recommend 3 |
 | `maximum_parent_fraction` | 0.7 | Maximum fraction of the parent population that can survive into the next generation; limits elitism |
 | `front1_cap_fraction` | 0.5 | Maximum fraction of the population allowed to come from Pareto front 1.  When front 1 grows too large, NSGA-II degenerates to crowding-distance selection and diversity collapses.  This cap forces excess front-1 members to be displaced by members from lower fronts. |
+| `mutation_mode` | `"legacy"` | Mutation operator.  `"legacy"` reproduces every OSO run published to date, including a for/else defect in `ga_functions.mutateChromosome` that makes it *set* bits rather than flip them (so it can never clear a bit, biasing every mutated variable upward).  Use `"corrected"` — a true bit flip — for all new work; results are not comparable to published runs. |
+| `nsga_sort` | `"penalty"` | Non-dominated sort.  `"penalty"` folds constraint violations into the objectives as weighted penalties; `"constrained"` uses Deb (2002) constraint-domination, where feasible always beats infeasible and infeasible members are ranked by total violation. |
 
-The NSGA-II implementation is in `ga_new_generation_mpi_nsga2_v2.py`.  Two fixes versus the original NSGA-II are applied: (1) duplicate design-vector removal from the combined parent+child pool before non-dominated sorting, and (2) the front-1 population cap described above.
+The NSGA-II implementation is in `oso_airfoils/optimization/generation.py`.  Two fixes versus the original NSGA-II are applied: (1) duplicate design-vector removal from the combined parent+child pool before non-dominated sorting, and (2) the front-1 population cap described above.
 
 
 Continuation Runs
@@ -250,4 +338,6 @@ The distinction between the two scripts is the `tool` field: `generate_jsons.py`
 Modifying the Objective Function
 ----------------------------------
 
-The objective function and all constraint logic is in `wt_objective_nsga2.py`.  The MPI task distribution and GA loop are in `common_runner.py` and `ga_new_generation_mpi_nsga2_v2.py`.  The initial seed population is drawn from a library of 100 pre-generated airfoils in `newMember.py`, scaled to the target tau before the first generation.
+The objective function and all constraint logic is in `oso_airfoils/optimization/objective_function.py`.  The GA loop is in `driver.py`, the generation step in `generation.py`, and the task distribution in `evaluators.py`.  The initial seed population is drawn from a library of 100 pre-generated airfoils in `oso_airfoils/geometry/newMember.py`, scaled to the target tau before the first generation.
+
+The aerodynamic solver and the geometry class are passed into `core_fitness_function` as arguments (`solver=`, `kulfan=`) rather than being module globals selected by `tool`.  To add a new solver, add a branch to `solvers.make_solver`; nothing else needs to change.

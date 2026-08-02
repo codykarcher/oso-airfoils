@@ -128,7 +128,14 @@ fix_colormap_range = None   # (min_val, max_val) or None for auto
 font_size          = 20
 legend_font_size   = 12
 
-turbo_cmap = plt.get_cmap('turbo', nafl)
+# Same truncated turbo ramp the polar rainbow uses, so an airfoil highlighted on the
+# front here is the SAME colour in polar_plot.png (see pareto_frame.CMAP_*).
+from oso_airfoils.postprocessing.pareto_frame import (
+    CMAP_LOWER as _CMAP_LOWER, CMAP_RAINBOW as _CMAP_RAINBOW, CMAP_UPPER as _CMAP_UPPER,
+)
+from oso_airfoils.postprocessing.polars import get_colors as _get_colors
+_ramp = _get_colors(max(nafl, 2), _CMAP_RAINBOW, lower=_CMAP_LOWER, upper=_CMAP_UPPER)
+turbo_cmap = lambda idx: _ramp[int(np.clip(idx, 0, len(_ramp) - 1))]
 
 # ── Frame generation (parallelised over MPI ranks) ───────────────────────────
 frames_dir = os.path.join(path_to_data, frames_dir_name)

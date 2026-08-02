@@ -144,7 +144,13 @@ def _resolve_spec(display_name: str, spec, afl_root) -> tuple:
                 afl = Kulfan()
                 afl.fit2coordinates(a0, a1)
             else:
-                afl = Kulfan(upperCoefficients=a0, lowerCoefficients=a1)
+                # metafoil's Kulfan takes snake_case constructor kwargs; the
+                # camelCase names survive only as attribute aliases, so passing them
+                # to __init__ raises. This is the (upper_coefs, lower_coefs) entry
+                # form -- the one a caller uses to plot a raw design vector.
+                afl = Kulfan()
+                afl.upperCoefficients = a0
+                afl.lowerCoefficients = a1
             return '', '', afl
 
     raise TypeError(
@@ -483,6 +489,94 @@ def _polar_neuralfoil(afl: Kulfan, sweep_param: str, sweep_range, Re: float,
     return _iterable_to_records(raw, 'neuralfoil')
 
 
+#: Cache of loaded surrogate nets, keyed by (backend, model). Reloading the net for
+#: every airfoil in a rainbow would dominate the runtime.
+_SURROGATE_CACHE: dict = {}
+
+
+def _expand_sweep(sweep_range) -> list:
+    """Explicit alpha list from a sweep spec.
+
+    Follows the wrappers' convention: a THREE-element spec is
+    ``(start, stop, step)``, anything else is already an explicit list of values.
+    Getting this wrong is silent and ugly -- treating ``(-5, 25, 0.5)`` as three
+    alphas builds a 3-point cache that the serving layer then nearest-matches a
+    61-point request against, producing a staircase that still looks like a polar.
+    """
+    vals = list(sweep_range)
+    if len(vals) == 3:
+        start, stop, step = (float(v) for v in vals)
+        if step > 0 and stop > start:
+            n = int(round((stop - start) / step)) + 1
+            return list(np.linspace(start, stop, n))
+    return [float(v) for v in vals]
+
+
+def _polar_surrogate(afl: Kulfan, sweep_range, Re: float, N_crit: float,
+                     xtp_u: float, xtp_l: float, backend: str,
+                     model: str) -> list[dict]:
+    """Polar from one of metafoil's batched surrogates (``nxfoil`` or ``nqfoil``).
+
+    Goes through the same BatchSurrogate the optimizer uses, so a polar plotted here
+    is produced by exactly the code path that generated the design -- and its output
+    dict matches the file-I/O wrappers' contract, so the record builder is shared.
+    """
+    from oso_airfoils.optimization.batch_surrogate import BatchSurrogate
+    key = (backend, model)
+    if key not in _SURROGATE_CACHE:
+        _SURROGATE_CACHE[key] = BatchSurrogate(backend=backend, model_size=model,
+                                               device='cpu')
+    bs = _SURROGATE_CACHE[key]
+    alphas = _expand_sweep(sweep_range)
+    te_gap = float(afl.constants.TE_gap)
+    upper = np.asarray(afl.upperCoefficients, float)
+    lower = np.asarray(afl.lowerCoefficients, float)
+    sweep = dict(name=f'{Re:g}|{N_crit:g}|{xtp_u:g}|{xtp_l:g}', Re=Re, ncrit=N_crit,
+                 xtr_u=xtp_u, xtr_l=xtp_l, alphas=np.asarray(alphas, float))
+    # Serve from a cache primed for the WHOLE plot if one is live (see
+    # prime_surrogate_cache); otherwise fall back to a private single-airfoil build.
+    if not _cache_has(bs, upper, lower, te_gap, sweep['name']):
+        bs.build_population_cache([upper], [lower], te_gap, [sweep])
+    raw = bs.make_cached_run()('alpha', upper, lower, val=alphas, Re=Re,
+                               N_crit=N_crit, xtp_u=xtp_u, xtp_l=xtp_l,
+                               TE_gap=te_gap, model=model)
+    return _iterable_to_records(raw, backend)
+
+
+def _cache_has(bs, upper, lower, te_gap, sweep_name) -> bool:
+    from oso_airfoils.optimization.batch_surrogate import _key
+    return (getattr(bs, '_cache', None) is not None
+            and (_key(upper, lower, te_gap), sweep_name) in bs._cache)
+
+
+def prime_surrogate_cache(kulfans, reynolds_numbers, turb_cases, sweep_range,
+                          backend: str, model: str) -> None:
+    """Evaluate EVERY (airfoil x condition) for a plot in ONE batched forward.
+
+    Without this each airfoil/turbulence-case pair built its own single-airfoil cache
+    -- 18 separate forwards for a 9-airfoil rainbow, which measured as ~86% of the
+    figure's total cost. Batching them collapses that to one forward, the same way
+    the optimizer evaluates a whole generation at once.
+    """
+    from oso_airfoils.optimization.batch_surrogate import BatchSurrogate
+    kulfans = [k for k in kulfans if k is not None]
+    if not kulfans:
+        return
+    key = (backend, model)
+    if key not in _SURROGATE_CACHE:
+        _SURROGATE_CACHE[key] = BatchSurrogate(backend=backend, model_size=model,
+                                               device='cpu')
+    bs = _SURROGATE_CACHE[key]
+    alphas = np.asarray(_expand_sweep(sweep_range), float)
+    uppers = [np.asarray(k.upperCoefficients, float) for k in kulfans]
+    lowers = [np.asarray(k.lowerCoefficients, float) for k in kulfans]
+    tes = np.array([float(k.constants.TE_gap) for k in kulfans], float)
+    sweeps = [dict(name=f'{re:g}|{tc[0]:g}|{tc[1]:g}|{tc[2]:g}', Re=re, ncrit=tc[0],
+                   xtr_u=tc[1], xtr_l=tc[2], alphas=alphas)
+              for re in reynolds_numbers for tc in turb_cases]
+    bs.build_population_cache(np.array(uppers), np.array(lowers), tes, sweeps)
+
+
 def _bl_xfoil(afl: Kulfan, mode: str, val: float, Re: float,
               N_crit: float, xtp_u: float, xtp_l: float) -> dict | None:
     try:
@@ -570,7 +664,10 @@ def _get_polar_records(
             for tc in turb_cases:
                 N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
                 for tool in tools:
-                    if tool == 'neuralfoil':
+                    if tool in ('nxfoil', 'nqfoil'):
+                        records.extend(_polar_surrogate(_afl, sweep_range, re, N_crit,
+                                                        xtp_u, xtp_l, tool, neuralfoil_model))
+                    elif tool == 'neuralfoil':
                         records.extend(_polar_neuralfoil(_afl, sweep_param, sweep_range, re, N_crit, xtp_u, xtp_l, neuralfoil_model))
                     elif tool == 'rfoil':
                         continue  # already loaded above
@@ -621,7 +718,11 @@ def _get_polar_records(
         for tc in turb_cases:
             N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
             for tool in tools:
-                if tool == 'neuralfoil':
+                if tool in ('nxfoil', 'nqfoil'):
+                    new_records.extend(
+                        _polar_surrogate(_afl, all_vals, re, N_crit, xtp_u, xtp_l,
+                                         tool, neuralfoil_model))
+                elif tool == 'neuralfoil':
                     # Always recompute — fast, model-version-independent, never cache.
                     if _afl is None:
                         _afl = _load_kulfan(family, stem, afl_root)

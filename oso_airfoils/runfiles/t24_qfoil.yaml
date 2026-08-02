@@ -126,8 +126,9 @@ alpha_min_extend                          : -10
 # GA params
 N_crossovers                              : 3
 probability_of_mutation                   : 0.3
-maximum_parent_fraction                   : 0.3
-front1_cap_fraction                       : 0.5
+maximum_parent_fraction                   : 0.7
+front1_cap_fraction                       : 0.8
+mutation_mode                             : corrected
 N_mutations                               : 4
 
 

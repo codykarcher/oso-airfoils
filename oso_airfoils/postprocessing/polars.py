@@ -79,7 +79,12 @@ _DEFAULT_STYLE: dict[str, Any] = {
 }
 
 # Tool priority order for linestyle assignment
-_TOOL_ORDER = ['xfoil', 'qfoil', 'rfoil', 'neuralfoil']
+# Tool priority, highest first -- drives linestyle rank in _tool_linestyle.
+# The panel methods rank above the surrogates that imitate them: nxfoil is metafoil's
+# float-exact NeuralFoil port (XFOIL fidelity) and nqfoil is the QFOIL/RFOIL-trained
+# equivalent. 'neuralfoil' is the superseded pip-package path, kept so old saved
+# records still plot.
+_TOOL_ORDER = ['xfoil', 'qfoil', 'rfoil', 'nxfoil', 'nqfoil', 'neuralfoil']
 
 
 # ── colour / geometry helpers ─────────────────────────────────────────────────
@@ -230,7 +235,9 @@ def _tool_linestyle(tool: str, turb_idx: int, active_tools: list[str]) -> Any:
 
 
 def _tool_label(tool: str) -> str:
-    return {'xfoil': 'XFOIL', 'qfoil': 'QFOIL', 'neuralfoil': 'NeuralFoil', 'rfoil': 'RFoil'}.get(tool, tool)
+    return {'xfoil': 'XFOIL', 'qfoil': 'QFOIL', 'rfoil': 'RFoil',
+            'nxfoil': 'nxfoil', 'nqfoil': 'nqfoil',
+            'neuralfoil': 'NeuralFoil'}.get(tool, tool)
 
 
 def _coords_from_geometry(geom) -> list[tuple]:
@@ -252,6 +259,7 @@ def polarPlot(
     legend_entries=None,
     linecolors=None,
     linestyles=None,
+    zorders=None,
     coordinatecolors=None,
     coordinatestyles=None,
     width_ratios=None,
@@ -273,6 +281,10 @@ def polarPlot(
         ``'text'``, ``'linestyle'``, ``'linecolor'``, ``'markersize'``.
     linecolors, linestyles : list, optional
         Per-dataset colour and linestyle.
+    zorders : list, optional
+        Per-dataset draw depth.  Layering is set HERE rather than by reordering
+        ``dataList`` so that the legend, which follows list order, is unaffected --
+        changing which curve sits on top must not reshuffle the legend.
     coordinatecolors, coordinatestyles : list, optional
         Per-airfoil shape colour and linestyle.
     width_ratios : list of float, optional
@@ -359,8 +371,8 @@ def polarPlot(
                 afl_frac = sum(width_ratios[2:]) / sum(width_ratios)
             else:
                 afl_frac = 5.0 / 8.0
-            afl_w_in = fig_width * afl_frac * 0.80
-            top_h = max(afl_w_in * (y_range / x_range) + 1.2, 3.0)
+            afl_w_in = fig_width * afl_frac * 0.98
+            top_h = max(afl_w_in * (y_range / x_range) + 1.4, 5.5)
         else:
             top_h = 3.5
 
@@ -469,6 +481,8 @@ def polarPlot(
         cmmax = max(cmmax, entry['cm'].max())
 
         kw = dict(color=plot_color, linestyle=linestyle, linewidth=lw)
+        if zorders and i < len(zorders) and zorders[i] is not None:
+            kw['zorder'] = zorders[i]
 
         if ax0 is not None:
             ax0.plot(entry['cpmin'], entry['cl'], **kw)
@@ -999,10 +1013,19 @@ def polars_rainbow(
     _rainbow_colors = get_colors(max(n_airfoils, 2), st['cmap_rainbow'],
                                  lower=st['cmap_lower_rainbow'], upper=st['cmap_upper_rainbow'])
 
+    # Layering, independent of legend order (see polarPlot's `zorders`):
+    # the roughest condition goes down first and the cleanest sits on top, because
+    # the clean curve is the primary read and gets hidden where the two run close
+    # together. Reference airfoils are drawn above everything.
+    _n_turb = max(len(turb_cases), 1)
+    _turb_z = lambda ii: 2.0 + (_n_turb - 1 - ii)      # ii=0 (clean) -> highest
+    _REF_Z = 20.0
+
     data_list        = []
     coords_list      = []
     linecolors       = []
     linestyles       = []
+    zorders          = []
     coordinatecolors = []
     linecolors_by_name: dict[str, Any] = {}
     _seen_names: set = set()
@@ -1038,6 +1061,7 @@ def polars_rainbow(
                     data_list.append(filtered)
                     linecolors.append(color)
                     linestyles.append(_tool_linestyle(tool, ii, tools))
+                    zorders.append(_turb_z(ii))
 
     if geometry_dict is not None:
         valid = [(c, cc) for c, cc in zip(coords_list, coordinatecolors) if c is not None]
@@ -1072,6 +1096,7 @@ def polars_rainbow(
                             data_list.append(filtered)
                             linecolors.append(ref_color)
                             linestyles.append(_tool_linestyle(tool, ii, tools))
+                            zorders.append(_REF_Z + _turb_z(ii) / 100.0)
                         else:
                             print(f'  Warning: no {tool} records for reference {ref_name!r}'
                                   f'  Re={re:.2e}  Ncrit={N_crit}  xtp={xtp_u}/{xtp_l}'
@@ -1127,6 +1152,7 @@ def polars_rainbow(
         legend_entries=split_leg,
         linecolors=linecolors,
         linestyles=linestyles,
+        zorders=zorders,
         coordinatecolors=coordinatecolors,
         show_cpmin=show_cpmin,
         cl_design=cl_design,

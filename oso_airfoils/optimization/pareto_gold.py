@@ -121,9 +121,17 @@ def _init_worker(cfg):
     except Exception:
         pass
     import numpy as _np
+    # propagate the opt-in curvature-accel flag to this (spawned) worker's module
+    # global so its make_solver -> constraint_list(enabled=CONSTRAINTS) enforces it.
+    if "curvature_accel" in cfg:
+        CONSTRAINTS["curvature_accel"] = bool(cfg["curvature_accel"])
+    if "bulge" in cfg:
+        CONSTRAINTS["bulge"] = bool(cfg["bulge"])
     ctx = og.make_context(tool=cfg["tool"], model_size=cfg["model"],
                           params=cfg["params"])
     ctx["n_aux"] = 1
+    ctx["curvature_accel"] = bool(CONSTRAINTS.get("curvature_accel", False))
+    ctx["bulge"] = bool(CONSTRAINTS.get("bulge", False))
     bounds = list(zip(_np.full(16, -2.0), _np.full(16, 2.0))) + [(0.10, 0.98)]
     _W["solve"] = make_solver(ctx, cfg["params"], bounds, cfg["max_iter"],
                               proj_max_iter=cfg["proj_max_iter"])
@@ -138,10 +146,14 @@ def _run_task(task):
     return a max-violation record; downstream keeps the best-FEASIBLE / least-violating
     per point, so a failed sub-solve simply loses to any real solve and the sweep finishes.
     """
-    tag, which, z0, floor = task
+    tag, which, z0, floor = task[:4]
+    explore = task[4] if len(task) > 4 else False   # loose-explore flag (5-tuple robust tasks)
     z0 = np.asarray(z0, float)
+    # A 'clean'-objective task floors ROUGH L/D; a 'rough'-objective task floors CLEAN L/D
+    # (the two-sided sweep). floor=None (phase-1 locators) -> no floor either way.
+    kw = {"clean_lod_min": floor} if which == "rough" else {"rough_lod_min": floor}
     try:
-        z, d = _W["solve"](which, z0, rough_lod_min=floor)
+        z, d = _W["solve"](which, z0, explore=explore, **kw)
         return tag, z, d
     except Exception as e:
         print(f"[sub-solve {tag} FAILED: {type(e).__name__}: {str(e)[:110]}]", flush=True)
@@ -181,6 +193,136 @@ from metafoil.core.kulfan_geometry import (fit_kulfan_to_coordinates,    # noqa:
                                            kulfan_to_coordinates)
 from cyipopt import minimize_ipopt                                       # noqa: E402
 from oso_airfoils.optimization import gradient_objective as og           # noqa: E402
+from numpy.polynomial import polynomial as _npoly                        # noqa: E402
+from metafoil.core.kulfan import _binom as _kbinom                       # noqa: E402
+
+
+# ----------------------------------------------------------------------
+# FIX 2(a): exact lower-surface inflection count (analytic polynomial roots).
+# zeta_lower = psi^0.5 (1-psi) S(psi) + linear; the linear term drops out of
+# zeta'', and sign(zeta'') = sign(P) with P = -0.25 g + psi g' + psi^2 g'',
+# g = (1-psi) S. Counting sign-flip roots of P in (le_cutoff, 1) is the exact
+# inflection count -- the same method verified to match constraint_list's
+# signflip terms to 0.0. Used as a HARD reject: any candidate with count > 1 is
+# treated as infeasible so it can never become a reported front point (the smooth
+# psi*-gated surrogate leaks and certifies 2-3 inflection airfoils as feasible).
+# ----------------------------------------------------------------------
+def _exact_lower_inflections(lower, le_cutoff=0.02):
+    lo = np.asarray(lower, float); M = len(lo); n = M - 1
+    one_minus = np.array([1.0, -1.0])
+    S = np.array([0.0])
+    for kk in range(M):
+        psi_k = np.zeros(kk + 1); psi_k[kk] = 1.0
+        opp = _npoly.polypow(one_minus, n - kk)
+        S = _npoly.polyadd(S, _kbinom(n, kk) * lo[kk] * _npoly.polymul(psi_k, opp))
+    g = _npoly.polymul(one_minus, S)
+    gp = _npoly.polyder(g, 1); gpp = _npoly.polyder(g, 2)
+    P = _npoly.polyadd(-0.25 * g, _npoly.polymul(np.array([0.0, 1.0]), gp))
+    P = _npoly.polyadd(P, _npoly.polymul(np.array([0.0, 0.0, 1.0]), gpp))
+    cnt = 0
+    for r in _npoly.polyroots(P):
+        if abs(r.imag) < 1e-8 and le_cutoff < r.real < 1.0:
+            e = 1e-6
+            if _npoly.polyval(r.real - e, P) * _npoly.polyval(r.real + e, P) < 0:
+                cnt += 1
+    return cnt
+
+
+# ----------------------------------------------------------------------
+# INFLECTION REPAIR: project a lower surface onto <=1 curvature sign-change with the
+# SMALLEST coefficient change, instead of rejecting it (which drains the guarantee-pass
+# pool and collapses thin fronts). d2zeta_lower is LINEAR in the CST coeffs -- the constant
+# Jacobian J2 (d2 = J2 @ lower) is probed once by unit vectors -- so for a fixed split psi*
+# the projection is a convex QP:  min ||delta||^2  s.t.  tgt_j*(d2_j + J2_j@delta) >= margin,
+# tgt_j = +/-s0 (match the near-LE sign before psi*, flip after). We try each existing
+# sign-change of d2 as psi* and keep the smallest-norm feasible delta, then VERIFY with the
+# exact polynomial count (grid-sign enforcement can miss a sub-grid wiggle; margin catches it).
+# ----------------------------------------------------------------------
+_J2_LOWER_CACHE = {}
+
+def _lower_curvature_jacobian(psi_int, te_gap, n_coeff):
+    key = (n_coeff, round(float(te_gap), 12), len(psi_int), round(float(psi_int[-1]), 10))
+    J = _J2_LOWER_CACHE.get(key)
+    if J is None:
+        z = np.zeros(n_coeff)
+        J = np.empty((len(psi_int), n_coeff))
+        for k in range(n_coeff):
+            e = z.copy(); e[k] = 1.0
+            kf = Kulfan(upper_coefficients=z, lower_coefficients=e, te_gap=te_gap)
+            J[:, k] = np.asarray(kf.d2zeta_dpsi2(psi_int, 'lower'), float)
+        _J2_LOWER_CACHE[key] = J
+    return J
+
+
+def _ldp(G, h):
+    """Least Distance Programming (Lawson-Hanson): min ||x|| s.t. G@x >= h, via NNLS.
+    Robust where SLSQP fails ('positive directional derivative'). Returns x, or None if
+    the constraints are inconsistent (infeasible)."""
+    from scipy.optimize import nnls
+    G = np.asarray(G, float); h = np.asarray(h, float); n = G.shape[1]
+    E = np.vstack([G.T, h.reshape(1, -1)])          # (n+1, m)
+    f = np.zeros(n + 1); f[-1] = 1.0
+    u, _ = nnls(E, f)
+    r = E @ u - f
+    if abs(r[-1]) < 1e-12:
+        return None
+    return -r[:n] / r[-1]
+
+
+def repair_lower_inflection(lower, te_gap=0.0, le_cutoff=0.02, margin=1e-5, max_delta=5e-3, verify=True):
+    """Return the min-coefficient-change lower coeffs with <=1 exact inflection, or None if the
+    projection can't be verified OR would require a change larger than ``max_delta`` (max abs
+    coeff move) -- i.e. only a genuinely SHALLOW wiggle is repaired; a deep 2nd inflection is
+    left for the caller to reject/rebuild (it's a real feature, not a surrogate leak). Unchanged
+    if already <=1. Projects onto convex-then-concave (sign s0 before a split psi*, -s0 after)
+    with the SMALLEST ||delta|| via LDP; tries each dense-grid sign-change of d2 as psi* and keeps
+    the smallest-norm delta that passes the EXACT count. Fine grid catches narrow near-LE lobes."""
+    lo = np.asarray(lower, float); nC = len(lo)
+    if _exact_lower_inflections(lo, le_cutoff) <= 1:
+        return lo
+    psi = np.linspace(le_cutoff, 0.9995, 2500)        # fine: catches ~0.002-wide near-LE lobes
+    J2 = _lower_curvature_jacobian(psi, te_gap, nC)
+    d2 = J2 @ lo
+    s0 = 1.0 if d2[0] >= 0 else -1.0
+    sc = np.where(np.sign(d2[:-1]) != np.sign(d2[1:]))[0]
+    if len(sc) == 0:
+        return lo
+    best = None
+    for jc in sc:
+        tgt = np.where(psi <= psi[jc], s0, -s0)
+        x = _ldp(tgt[:, None] * J2, margin - tgt * d2)   # min ||x|| s.t. tgt*(d2 + J2@x) >= margin
+        if x is None:
+            continue
+        rep = lo + x
+        if _exact_lower_inflections(rep, le_cutoff) <= 1:
+            nrm = float(x @ x)
+            if best is None or nrm < best[1]:
+                best = (rep, nrm, float(np.max(np.abs(x))))
+    if best is None or best[2] > max_delta:      # no verified projection, or not a SHALLOW one
+        return None
+    return best[0]
+
+
+# ----------------------------------------------------------------------
+# FIX 1: diverse multistart seeds for the endpoint locators. Seed 0 is the family
+# .dat fit unchanged; the rest are a ball of restarts around it with the per-restart
+# jitter sigma ramped sig_lo..sig_hi (near-seed -> far-basin) plus a random psi*
+# start. The old seeding was a sigma=0.05 ball (spread ~0.2 in coeff L2) while the
+# distinct basins sit ~0.8-1.3 apart, so it was effectively single-start and which
+# basin a run reached was luck; this spread reliably reaches the clean-biased basin.
+# ----------------------------------------------------------------------
+def _diverse_seeds(z0, n, rng, lo_b, hi_b, sig_lo=0.05, sig_hi=0.5):
+    z0 = np.asarray(z0, float)
+    seeds = [np.array(z0, float)]
+    m = max(0, int(n) - 1)
+    if m == 0:
+        return seeds
+    for sig in np.linspace(sig_lo, sig_hi, m):
+        zc = np.array(z0, float)
+        zc[:16] += rng.normal(0.0, sig, 16)
+        zc[16] = rng.uniform(0.15, 0.90)                 # random psi* (curvature-split) start
+        seeds.append(np.clip(zc, lo_b, hi_b))
+    return seeds
 
 
 # ----------------------------------------------------------------------
@@ -192,10 +334,39 @@ CONSTRAINTS = {
     'stall_margin': True, 'moments_of_inertia': True, 'area': True,
     'leading_edge_radius': True, 'radii_skew': False, 'max_thickness_location': True,
     'te_cone': True, 'curvature': True, 'lower_signflip': True,
-    'min_radius_location': True, 'rough_xtr_cap': True, 'roughness_delta_cl': True, 'lod_falloff': True,
+    'min_radius_location': True, 'rough_xtr_cap': False, 'roughness_delta_cl': True, 'lod_falloff': True,  # V7: cap OFF
     'lod_falloff_2': True, 'transition_slope': True, 'cl_linearity': False, 'moment': True,
     'cpmin': False, 'cl_target': False, 'slope_ratio': True,
+    'curvature_accel': False,   # |d2kappa/ds2| <= frozen envelope; OFF by default (opt-in)
+    'bulge': True,              # lower-surface no-rising-mid-chord-hump guard; ON (relative, inert unless bulging)
 }
+
+
+def eps_grid(r_lo, r_hi, M, params=None):
+    """The epsilon-constraint sweep levels: a linear blend of UNIFORM and
+    ROUGH-DENSE COSINE spacing, weight w in [0, 1] from ``eps_cosine_blend``.
+
+    Cosine = sin(pi/2 * t), which flattens as t->1 so levels bunch near r_hi (the
+    hard rough end); uniform is even. w=0 pure uniform, w=1 pure cosine, w=0.5 a
+    50/50 mix. Both share t, so every blend hits r_lo and r_hi exactly -- the
+    clean and rough corners are preserved for any w. Legacy
+    ``eps_cosine_rough`` == w=1.
+
+    Lives here, and is imported by live.live_gradient, because both the batch
+    sweep and the live dashboard have to lay out the SAME front. They each had
+    their own ``np.linspace`` before, so the blend landed in one and not the
+    other and the two silently produced differently-spaced fronts from identical
+    settings.
+    """
+    params = params or {}
+    t = np.linspace(0.0, 1.0, M)
+    uni = r_lo + (r_hi - r_lo) * t
+    cos = r_lo + (r_hi - r_lo) * np.sin(0.5 * np.pi * t)
+    w = params.get('eps_cosine_blend', None)
+    if w is None:
+        w = 1.0 if params.get('eps_cosine_rough', False) else 0.0
+    w = float(np.clip(w, 0.0, 1.0))
+    return (1.0 - w) * uni + w * cos
 
 
 # ----------------------------------------------------------------------
@@ -305,6 +476,7 @@ def _afl_entry(label, z, te_gap, cl=None, rl=None, v=None, e=None):
              upper_coefficients=[float(c) for c in z[:8]],
              lower_coefficients=[float(c) for c in z[8:16]],
              psi_star=float(z[16]),
+             lower_inflections=int(_exact_lower_inflections(z[8:16])),
              x=[float(a) for a in xy[:, 0]], y=[float(a) for a in xy[:, 1]])
     if cl is not None:
         d.update(clean_LD=float(cl), rough_LD=float(rl), violation=float(v),
@@ -345,7 +517,14 @@ def make_solver(ctx, params, bounds, max_iter, feasibility_first=True,
     before giving up. With a slow model (NF-xxxlarge is ~6.4 s per evaluate, 21x
     medium) and several function evaluations per line search, that is hours for a
     single hard point. Lower this to bound the worst case."""
-    def solve(which, z_start, rough_lod_min=None, clean_lod_min=None):
+    def solve(which, z_start, rough_lod_min=None, clean_lod_min=None, explore=False):
+        # loose-explore: multi-start seeds only need to FIND the basin, so run them at
+        # reduced iterations + looser tol; the winner is later re-solved with explore=False
+        # (tight) to polish. Cuts exploration cost without losing basins.
+        _mit = max(30, max_iter // 2) if explore else max_iter
+        _pit = max(60, proj_max_iter // 2) if explore else proj_max_iter
+        _otol = 2e-3 if explore else _OPTS['tol']
+        _ptol = 3e-3 if explore else 1e-6
         cache = {}
         last_good_grad = {}          # fallback direction when evaluate() fails
 
@@ -552,12 +731,16 @@ def main():
                          "rough floor), so each point is solved from this many seeds "
                          "(interp + perturbations) and the best FEASIBLE clean kept. "
                          "M*K sub-solves run fully in parallel.")
-    ap.add_argument("--locator-starts", type=int, default=4,
-                    help="multi-start count per endpoint locator (phase 1). The "
-                         "endpoints are non-convex single-objective optima and are "
-                         "seed-sensitive; this many starts (family seed + "
-                         "perturbations, plus cross-seeding) are tried and the best "
-                         "kept. Phase 1 has spare threads, so this is ~free.")
+    ap.add_argument("--locator-starts", type=int, default=10,
+                    help="DIVERSE multi-start count per endpoint locator (phase 1), "
+                         "default 10. The endpoints are non-convex single-objective "
+                         "optima and are seed-sensitive/multi-modal; this many starts "
+                         "(family seed + a ball of restarts with jitter sigma ramped "
+                         "0.05..0.30 and random psi*, plus cross-seeding) are tried and "
+                         "the best FEASIBLE, <=1-inflection one kept. A sigma=0.05-only "
+                         "ball was effectively single-start and landed in the wrong basin "
+                         "run-to-run; the spread reliably reaches the clean-biased basin. "
+                         "~10-12 is reliable without being runaway on the 6-thickness fleet.")
     ap.add_argument("--xtr-rough", type=float, default=None,
                     help="override the ROUGH forced-transition x/c for BOTH surfaces "
                          "(e.g. 0 = trip at the leading edge). Default: use the config's "
@@ -597,6 +780,56 @@ def main():
                     help="override cl_linearity tolerance (both clean and rough) -- the "
                          "max fractional lift-curve slope mismatch across a_des-2->a_des-1->a_des. "
                          "Default: the params value (0.01).")
+    ap.add_argument("--two-sided", action="store_true",
+                    help="two-sided epsilon sweep: the clean half maximizes CLEAN L/D s.t. rough>=eps "
+                         "(rough floors), the rough half maximizes ROUGH L/D s.t. clean>=eps (clean floors), "
+                         "then merge nondominated. The rough end becomes a genuine rough-optimum instead of "
+                         "'cleanest airfoil that still hits max rough'. Default: one-sided (max clean throughout).")
+    ap.add_argument("--eps-cosine-rough", action="store_true",
+                    help="space the epsilon sweep with a cosine cluster whose DENSE end is on the "
+                         "rough side (near rough_max), instead of uniform -- more front resolution "
+                         "in the hard rough band. Endpoints (both corners) preserved. (== --eps-cosine-blend 1.0)")
+    ap.add_argument("--eps-cosine-blend", type=float, default=None, metavar="W",
+                    help="linear blend of uniform and rough-dense-cosine eps spacing: "
+                         "eps = (1-W)*uniform + W*cosine, W in [0,1]. W=0 uniform, W=1 full cosine, "
+                         "W=0.5 a 50/50 mix. Overrides --eps-cosine-rough when given.")
+    ap.add_argument("--eps-equality", action="store_true",
+                    help="pin each epsilon point to its floor with an EQUALITY (LoD_rough==eps) instead of the "
+                         "default inequality (LoD_rough>=eps). Forces even spacing along the rough axis and stops "
+                         "several eps collapsing onto the rough corner; a point becomes infeasible (honest gap) "
+                         "where no airfoil sits at exactly that rough.")
+    ap.add_argument("--repair-inflection", action="store_true",
+                    help="REPAIR points whose raw solve has a shallow 2nd lower-surface inflection "
+                         "(surrogate leak) by projecting onto the exact <=1-inflection manifold with a "
+                         "tiny coeff nudge (L/D preserved), instead of collapsing them onto the sparse "
+                         "guarantee pool. Deeper inflections still fall back to the rebuild.")
+    ap.add_argument("--no-inflection-guarantee", action="store_true",
+                    help="DIAGNOSTIC: skip the exact <=1-lower-inflection guarantee-pass rebuild and report the "
+                         "RAW epsilon-solves (which may include a small 2nd inflection the smooth signflip "
+                         "surrogate admits). Shows every distinct point the solver found.")
+    ap.add_argument("--robust", action="store_true",
+                    help="robust-solver bundle for the multi-modal rough tail: adaptive seeding (few seeds "
+                         "on the unimodal clean half, full K on the rough tail), relax-to-consistency + "
+                         "dominated-repair (re-seed each point from its neighbours' best until the front is "
+                         "neighbour-consistent), and loose-explore/tight-polish (cheap exploration, then one "
+                         "tight polish per point). Finds the true front without merging separate runs.")
+    ap.add_argument("--max-relax", type=int, default=8,
+                    help="max relax-to-consistency rounds under --robust (stops early when no point improves).")
+    ap.add_argument("--curvature-accel", action="store_true",
+                    help="enable the frozen |d2kappa/ds2| <= E(x/c) envelope constraint (OFF by default): "
+                         "keeps the blocky gradient airfoils from poking curvature-acceleration spikes "
+                         "through the V13-GA-derived envelope (curvature_envelope.json).")
+    ap.add_argument("--curvature-accel-stride", type=int, default=2,
+                    help="station stride for the curvature-accel constraint (1=every frozen station; "
+                         "higher = fewer Ipopt inequalities). Default 2.")
+    ap.add_argument("--no-bulge-guard", dest="bulge_guard", action="store_false",
+                    help="disable the lower-surface secondary-bulge guard (ON by default): forbids a "
+                         "rising mid-chord curvature hump (|kappa(x_band)| <= |kappa(2%%)| + margin). "
+                         "Relative/thickness-agnostic and inert unless the section is bulging.")
+    ap.set_defaults(bulge_guard=True)
+    ap.add_argument("--bulge-margin", type=float, default=None,
+                    help="allowed kappa rise above the 2%% shoulder before the bulge guard trips "
+                         "(default curvature_envelope.BULGE_MARGIN = 0.5).")
     args = ap.parse_args()
 
     # Per-tool default model size. nqfoil's ladder stops at xxlarge; neuralfoil's
@@ -625,6 +858,17 @@ def main():
         params, yml = default_params(), None
         seed_path = os.path.join(here, args.seed)
     params['lower_signflip_le_cutoff'] = args.le_cutoff   # enforce lower-surface curvature inboard
+    params['eps_floor_equality'] = bool(getattr(args, 'eps_equality', False))  # rough==eps (vs >=)
+    params['eps_cosine_rough'] = bool(getattr(args, 'eps_cosine_rough', False))  # cosine eps, dense on rough side
+    if getattr(args, 'eps_cosine_blend', None) is not None:
+        params['eps_cosine_blend'] = float(args.eps_cosine_blend)                 # linear uniform<->cosine blend weight
+    params['skip_inflection_guarantee'] = bool(getattr(args, 'no_inflection_guarantee', False))  # raw solves
+    params['repair_inflection'] = bool(getattr(args, 'repair_inflection', False))  # repair shallow 2nd inflection
+    CONSTRAINTS['curvature_accel'] = bool(args.curvature_accel)          # opt-in envelope constraint
+    params['curvature_accel_stride'] = int(args.curvature_accel_stride)
+    CONSTRAINTS['bulge'] = bool(args.bulge_guard)                        # lower no-mid-hump guard (ON by default)
+    if args.bulge_margin is not None:
+        params['bulge_margin'] = float(args.bulge_margin)
     if args.cl_lin_tol is not None:
         params['cl_linearity_tol_clean'] = args.cl_lin_tol
         params['cl_linearity_tol_rough'] = args.cl_lin_tol
@@ -634,9 +878,12 @@ def main():
     # falloff/linearity samples for low-a_des airfoils (and lets the optimizer hide
     # falloff by pushing a_des below the grid). Force the grid below design-2deg.
     params['alpha_min_clean'] = min(params['alpha_min_clean'], -3.0)
-    # rough grid extended down to -8 (was -3) so the sweep brackets the rough zero-lift
-    # angle (~-4..-6 for these cambered CLd sections) that the slope_ratio constraint needs.
-    params['alpha_min_rough'] = min(params['alpha_min_rough'], -8.0)
+    # rough grid extended down to -14 so the sweep brackets the rough zero-lift angle AND
+    # leaves >=~2deg of margin below it for the slope_ratio's finite-difference stencil.
+    # High-camber (clean-biased, high-CLd) airfoils have zero-lift near -8deg; a -8 floor put
+    # zero-lift AT the grid edge, so the m0 finite-diff clamped and HALVED the zero-lift slope
+    # -> slope-ratio read ~2x too high, letting rounded clean-biased airfoils pass. -14 fixes it.
+    params['alpha_min_rough'] = min(params['alpha_min_rough'], -14.0)
     # min-radius-of-curvature LOCATION: flatten the LOWER threshold to a constant.
     # The tau-based min_radius_location_lower_function over-inflates for thick sections
     # (0.05 @ t33, 0.085 @ t36), letting lower-nose weirdness (aft curvature spike at
@@ -655,13 +902,17 @@ def main():
         params["xtp_u_clean"] = params["xtp_l_clean"] = args.xtr_clean
     ctx = og.make_context(tool=args.tool, model_size=args.model, params=params)
     ctx['n_aux'] = 1                                          # psi*: free lower-curvature sign-flip split
+    ctx['curvature_accel'] = bool(CONSTRAINTS.get('curvature_accel', False))  # |d2kappa/ds2| envelope (opt-in)
+    ctx['bulge'] = bool(CONSTRAINTS.get('bulge', False))                      # lower no-mid-hump guard
     bounds = list(zip(np.full(16, -2.0), np.full(16, 2.0))) + [(0.10, 0.98)]  # 16 coeffs + psi*
     solve = make_solver(ctx, params, bounds, args.max_iter, proj_max_iter=args.proj_max_iter)
     # picklable recipe so pool workers can rebuild `solve` (closures cannot cross
     # a process boundary); the in-process `solve` above still serves phase 1's
     # cheap cross-seeding and any --workers 1 run.
     wcfg = dict(tool=args.tool, model=args.model, params=params,
-                max_iter=args.max_iter, proj_max_iter=args.proj_max_iter)
+                max_iter=args.max_iter, proj_max_iter=args.proj_max_iter,
+                curvature_accel=bool(args.curvature_accel),
+                bulge=bool(args.bulge_guard))
 
     fit = fit_kulfan_to_coordinates(*load_airfoil_dat(seed_path).T[:2],
                                     fit_order=8, n_pts=160)
@@ -709,13 +960,29 @@ def main():
     if tight:
         _OPTS.update(dict(tol=1e-7, acceptable_iter=99999, constr_viol_tol=1e-6))
 
+    _lec = params.get('lower_signflip_le_cutoff', 0.02)
+
+    def _corner_ok(z, d):
+        # a usable corner is feasible AND genuinely <=1 lower-surface inflection
+        # (the smooth signflip surrogate leaks; enforce the exact count here).
+        return (d.get("violation", 1e9) <= 1e-3
+                and _exact_lower_inflections(z[8:16], _lec) <= 1)
+
     def best_of(results, which):
         key = "lod_" + which
         cand = [r for r in results if r[0] == which]
-        return max(cand, key=lambda r: r[3][key]) if cand else None
+        if not cand:
+            return None
+        # prefer feasible & <=1-inflection, then max L/D
+        return max(cand, key=lambda r: (1 if _corner_ok(r[2], r[3]) else 0, r[3][key]))
 
-    # Round 1: multi-start both objectives from the family seed + perturbations.
-    seeds = [z0] + [perturb(z0) for _ in range(n_start - 1)]
+    def _pick_corner(cands, key):
+        return max(cands, key=lambda zd: (1 if _corner_ok(*zd) else 0, zd[1][key]))
+
+    # Round 1: DIVERSE multi-start both objectives from a ball of restarts around
+    # the family seed (FIX 1): far enough to escape the family basin into the
+    # clean-biased / true-rough-max basins.
+    seeds = _diverse_seeds(z0, n_start, rng, lo_b, hi_b)
     tasks = [("clean", s) for s in seeds] + [("rough", s) for s in seeds]
     ptasks = [((i, which), which, np.asarray(zs, float), None)
               for i, (which, zs) in enumerate(tasks)]
@@ -742,9 +1009,9 @@ def main():
     if tight:                                          # restore default tolerance
         _OPTS.clear(); _OPTS.update(_saved)
 
-    # keep the best over both rounds
-    z_clean, d_clean = (zc1, dc1) if dc1["lod_clean"] >= dc2["lod_clean"] else (zc2, dc2)
-    z_rmax, d_rmax = (zr1, dr1) if dr1["lod_rough"] >= dr2["lod_rough"] else (zr2, dr2)
+    # keep the best over both rounds (prefer feasible & <=1-inflection, then L/D)
+    z_clean, d_clean = _pick_corner([(zc1, dc1), (zc2, dc2)], "lod_clean")
+    z_rmax, d_rmax = _pick_corner([(zr1, dr1), (zr2, dr2)], "lod_rough")
     rough_max = d_rmax["lod_rough"]
     r_lo = d_clean["lod_rough"]                        # rough at the clean-optimal airfoil
     r_hi = rough_max                                   # top of the epsilon range (exact rough_max)
@@ -769,71 +1036,255 @@ def main():
     #      FEASIBLE clean. All M*K solves are independent, so they distribute
     #      round-robin across ranks; most restarts hit the good basin.
     M = args.n + 2
-    eps_levels = np.linspace(r_lo, r_hi, M)
     K = max(1, getattr(args, "sweep_starts", 4))
+    FEAS = 1e-3
+    c_hi = d_clean["lod_clean"]        # max clean L/D (the clean corner)
+    c_lo = d_rmax["lod_clean"]         # clean L/D at the rough corner (bottom of the clean range)
 
-    def interp_seed(idx):
-        t = idx / (M - 1)
-        return (1.0 - t) * z_clean + t * z_rmax
+    def _seed_tasks(M_, seed_lo, seed_hi, robust=False):
+        # seed 0 is the interp guess between the two corners; 1..K-1 are perturbations.
+        # BOTH ends now get the full corner-seed + K wide-sigma restart set (the old --robust
+        # adaptive "clean half is unimodal -> 1-2 seeds" reduction was starving the clean end).
+        tasks = []
+        for idx in range(M_):
+            t = idx / (M_ - 1)
+            base = (1.0 - t) * seed_lo + t * seed_hi
+            # SYMMETRIC treatment for BOTH ends. Previously --robust gave the clean-biased
+            # half (t<0.45) only 1-2 "easy/unimodal" seeds while the rough tail got the full
+            # corner-seed + K wide restarts -- that starved the clean end and it started
+            # missing points. The clean end is just as basin-sensitive as the rough end, so it
+            # now gets the SAME number of calls and the SAME wide-sigma diversity fills.
+            if getattr(args, "corner_seed", False):
+                # anchor every point at BOTH corners so it can reach either basin, then
+                # fill K with WIDE, MULTI-ANCHOR, ramped-sigma restarts (sigma 0.15..0.55 off
+                # base / rough-corner / clean-corner, random psi*), so restarts reach the
+                # sparse basins at EITHER end instead of clustering next to the anchor.
+                seedlist = [z_clean, z_rmax, base]
+                n_fill = max(0, max(K, 3) - len(seedlist))
+                anchors = (base, z_rmax, z_clean)
+                for j, sig in enumerate(np.linspace(0.15, 0.5, n_fill) if n_fill else []):
+                    zc = np.array(anchors[j % len(anchors)], float)
+                    zc[:16] += rng.normal(0.0, sig, 16)
+                    zc[16] = rng.uniform(0.15, 0.90)          # random psi* (curvature split)
+                    seedlist.append(np.clip(zc, lo_b, hi_b))
+                for kk, s_ in enumerate(seedlist):
+                    tasks.append((idx, kk, s_))
+            else:
+                tasks.append((idx, 0, base))
+                for kk in range(1, K):
+                    tasks.append((idx, kk, perturb(base, 0.04)))
+        return tasks
 
-    # build (idx, seed) tasks: seed 0 is the interp guess, 1..K-1 are perturbations
-    tasks = []
-    for idx in range(M):
-        base = interp_seed(idx)
-        if getattr(args, "corner_seed", False):
-            # anchor every point at BOTH corners so it can reach either basin (z_clean is
-            # laminar-mode; the interp blend alone lands in the early-transition basin), then
-            # fill the rest of K with perturbations of the local blend.
-            seedlist = [z_clean, z_rmax, base]
-            while len(seedlist) < max(K, 3):
-                seedlist.append(perturb(base, 0.04))
-            for kk, s_ in enumerate(seedlist):
-                tasks.append((idx, kk, s_))
-        else:
-            tasks.append((idx, 0, base))
-            for kk in range(1, K):
-                tasks.append((idx, kk, perturb(base, 0.04)))
-    log(f"phase 2: {len(tasks)} (M={M} x K={K}) sub-solves")
-    ptasks = [((idx, kk), "clean", np.asarray(zs, float), float(eps_levels[idx]))
-              for (idx, kk, zs) in tasks]
-    res = _parallel_solve(ptasks, wcfg, workers=args.workers, log=log)
-    allsub = [(tag[0], float(eps_levels[tag[0]]), d["lod_clean"], d["lod_rough"],
-               d["violation"], z) for tag, z, d in res]
+    def run_sweep(which, floor_levels, seed_lo, seed_hi, tag, extra_pool=None):
+        """One epsilon sweep. which='clean' -> max clean s.t. rough>=eps (rough floors);
+        which='rough' -> max rough s.t. clean>=eps (clean floors). Returns best-feasible
+        (max objective) per index: [(idx, eps, lod_clean, lod_rough, viol, z), ...].
+        extra_pool seeds the <=1-inflection guarantee pool with airfoils found earlier
+        (e.g. the phase-1 locators), which span the whole rough range for free and keep
+        the guarantee pass from collapsing sparse regions onto one airfoil."""
+        M_ = len(floor_levels)
+        robust = getattr(args, "robust", False)
+        okey = "lod_clean" if which == "clean" else "lod_rough"   # objective maximized
+        fkey = "lod_rough" if which == "clean" else "lod_clean"   # floored quantity
+        _lec = params.get('lower_signflip_le_cutoff', 0.02)
 
-    # rank 0: keep the best FEASIBLE clean per idx
-    if rank == 0:
-        FEAS = 1e-3
+        # FIX 2(a) guarantee pool: every feasible, genuinely <=1-inflection airfoil
+        # seen ANYWHERE in this sweep (explore/relax/polish/cross-seed). The smooth
+        # signflip surrogate leaks -- the L/D-maximizer drifts into gentle multi-wiggle
+        # (2-3 exact inflection) basins that the surrogate certifies AND that no gate
+        # width can forbid (the extra inflections sit below constr_viol_tol). So instead
+        # of trusting any single solve, we rebuild the front from the <=1-inflection
+        # subset of everything found: each point = max-objective 1-inflection airfoil
+        # meeting its floor. Guarantees every reported point is exactly <=1 inflection.
+        pool = list(extra_pool or [])
+
+        def _record(z, d):
+            z = np.asarray(z, float)
+            if d.get("violation", 1e9) <= FEAS and _exact_lower_inflections(z[8:16], _lec) <= 1:
+                pool.append((d["lod_clean"], d["lod_rough"], d["violation"], z))
+
+        def _cand(idx, z, d):
+            eps = float(floor_levels[idx])
+            # FIX 2(a): HARD exact-inflection reject -- a >1-inflection airfoil is
+            # infeasible regardless of the (leaky) smooth surrogate, so it can never
+            # win a front point. Guarantees every reported point is genuinely <=1.
+            infl = _exact_lower_inflections(z[8:16], params.get('lower_signflip_le_cutoff', 0.02))
+            feas = (d["violation"] <= FEAS) and (d[fkey] >= eps - 0.5) and (infl <= 1)
+            return (feas, d[okey] if feas else -d["violation"],
+                    (idx, eps, d["lod_clean"], d["lod_rough"], d["violation"], z))
+
+        tasks = _seed_tasks(M_, seed_lo, seed_hi, robust=robust)
+        log(f"phase 2 [{tag}]: {len(tasks)} explore sub-solves (max {which} s.t. {fkey.split('_')[1]}>=eps)")
+        ptasks = [((idx, kk), which, np.asarray(zs, float), float(floor_levels[idx]), robust)
+                  for (idx, kk, zs) in tasks]
+        res = _parallel_solve(ptasks, wcfg, workers=args.workers, log=log)
         by_idx = {}
-        for idx, eps, cl, rg, v, z in allsub:
-            feasible = (v <= FEAS) and (rg >= eps - 0.5)
-            key = idx
-            cur = by_idx.get(key)
-            # prefer feasible; among feasible, highest clean; else least-violating
-            cand = (feasible, cl if feasible else -v, (idx, eps, cl, rg, v, z))
-            if cur is None or (cand[0], cand[1]) > (cur[0], cur[1]):
-                by_idx[key] = cand
+        for t_, z, d in res:
+            _record(z, d)
+            c = _cand(t_[0], z, d); cur = by_idx.get(t_[0])
+            if cur is None or (c[0], c[1]) > (cur[0], cur[1]):
+                by_idx[t_[0]] = c
 
-        # ---- cross-seed: walk each point's best design into its neighbors ----
-        for rnd in range(getattr(args, "cross_seed", 0)):
-            xtasks = []
-            for idx in range(M):
-                for j in (idx - 1, idx, idx + 1):
-                    if 0 <= j < M:
-                        zj = by_idx[j][2][5]
-                        xtasks.append(((idx, "x%d_%d" % (rnd, j)), "clean",
-                                       np.asarray(zj, float), float(eps_levels[idx])))
-            xres = _parallel_solve(xtasks, wcfg, workers=args.workers, log=log)
-            nimp = 0
-            for tag, z, dd in xres:
-                idx = tag[0]; eps = float(eps_levels[idx])
-                feas = (dd["violation"] <= FEAS) and (dd["lod_rough"] >= eps - 0.5)
-                cand = (feas, dd["lod_clean"] if feas else -dd["violation"],
-                        (idx, eps, dd["lod_clean"], dd["lod_rough"], dd["violation"], z))
-                if (cand[0], cand[1]) > (by_idx[idx][0], by_idx[idx][1]):
-                    by_idx[idx] = cand; nimp += 1
-            log("cross-seed round %d: %d points improved" % (rnd + 1, nimp))
+        if robust:
+            # #1 relax-to-consistency + #4 dominated-repair: re-seed each point from BOTH
+            # neighbours' best (warm start = cheap, loose-explore) until no point improves.
+            # A dominated point inherits its dominating neighbour's design, so the fixed point
+            # is neighbour-consistent -- this is the in-solver version of "merge best basins".
+            for rnd in range(getattr(args, "max_relax", 8)):
+                xtasks = []
+                for idx in range(M_):
+                    for j in (idx - 1, idx + 1):
+                        if 0 <= j < M_:
+                            xtasks.append(((idx, "r%d_%d" % (rnd, j)), which,
+                                           np.asarray(by_idx[j][2][5], float), float(floor_levels[idx]), True))
+                nimp = 0
+                for t_, z, dd in _parallel_solve(xtasks, wcfg, workers=args.workers, log=log):
+                    _record(z, dd)
+                    c = _cand(t_[0], z, dd)
+                    if (c[0], c[1]) > (by_idx[t_[0]][0], by_idx[t_[0]][1]):
+                        by_idx[t_[0]] = c; nimp += 1
+                log(f"phase 2 [{tag}] relax round {rnd+1}: {nimp} improved")
+                if nimp == 0:
+                    break
+            # tight polish: re-solve each point's best at full tol (explore=False)
+            ptp = [((idx, "P"), which, np.asarray(by_idx[idx][2][5], float), float(floor_levels[idx]), False)
+                   for idx in range(M_)]
+            for t_, z, dd in _parallel_solve(ptp, wcfg, workers=args.workers, log=log):
+                _record(z, dd)
+                c = _cand(t_[0], z, dd)
+                if (c[0], c[1]) > (by_idx[t_[0]][0], by_idx[t_[0]][1]):
+                    by_idx[t_[0]] = c
+            log(f"phase 2 [{tag}] tight polish done")
+        else:
+            # existing fixed cross-seed (unchanged v4 behaviour)
+            for rnd in range(getattr(args, "cross_seed", 0)):
+                xtasks = []
+                for idx in range(M_):
+                    for j in (idx - 1, idx, idx + 1):
+                        if 0 <= j < M_:
+                            xtasks.append(((idx, "x%d_%d" % (rnd, j)), which,
+                                           np.asarray(by_idx[j][2][5], float), float(floor_levels[idx]), False))
+                nimp = 0
+                for t_, z, dd in _parallel_solve(xtasks, wcfg, workers=args.workers, log=log):
+                    _record(z, dd)
+                    c = _cand(t_[0], z, dd)
+                    if (c[0], c[1]) > (by_idx[t_[0]][0], by_idx[t_[0]][1]):
+                        by_idx[t_[0]] = c; nimp += 1
+                log(f"phase 2 [{tag}] cross-seed round {rnd+1}: {nimp} improved")
 
-        pts = [by_idx[i][2] for i in range(M)]        # best feasible per idx, clean->rough
+        # DIAGNOSTIC: skip the <=1-inflection guarantee-pass rebuild entirely and report the
+        # RAW epsilon-solves (--no-inflection-guarantee). Lets you see every distinct point the
+        # solver actually found, including ones with a small 2nd lower-surface inflection that
+        # the smooth signflip surrogate let through. Still logs how many are >1 exact inflection.
+        if params.get('skip_inflection_guarantee', False):
+            n_multi = sum(1 for i in range(M_)
+                          if _exact_lower_inflections(by_idx[i][2][5][8:16], _lec) > 1)
+            log(f"phase 2 [{tag}] guarantee pass SKIPPED (--no-inflection-guarantee): raw solves "
+                f"reported; {n_multi}/{M_} points have >1 exact lower inflection")
+            return [by_idx[i][2] for i in range(M_)]
+
+        # REPAIR PASS (--repair-inflection): before falling back to the pool rebuild, try to
+        # REPAIR each point whose raw solve has a SHALLOW 2nd lower-surface inflection (the smooth
+        # signflip surrogate's leak). repair_lower_inflection nudges the lower coeffs onto the
+        # exact <=1-inflection manifold with the SMALLEST change (~1e-4 coeff, <0.02 L/D -- aero
+        # preserved), so the high-performance airfoil is KEPT instead of collapsing onto the sparse
+        # pool. Only genuinely shallow wiggles repair (max_delta gate); deeper ones return None and
+        # fall through to the rebuild below. The raw L/D is kept (the repair shifts it <0.02).
+        if params.get('repair_inflection', False):
+            nrep = 0
+            for idx in range(M_):
+                cur = by_idx[idx]; z = cur[2][5]
+                if _exact_lower_inflections(z[8:16], _lec) > 1:
+                    rep = repair_lower_inflection(z[8:16], te_gap=params['TE_gap'], le_cutoff=_lec)
+                    if rep is not None:
+                        zn = np.array(z, float); zn[8:16] = rep
+                        # `feas` (line ~1057) bundles the inflection check, so the raw solve was
+                        # feas=False ONLY because of the >1 inflection we just removed. Recompute
+                        # it (viol/floor unchanged; infl now <=1) and refresh the objective, else
+                        # the guarantee pass's `not cur_ok` clause rebuilds the repaired point.
+                        _viol = cur[2][4]
+                        _fq = cur[2][3] if which == 'clean' else cur[2][2]   # floored quantity
+                        _ok = (_viol <= FEAS) and (_fq >= float(floor_levels[idx]) - 0.5)
+                        _obj = (cur[2][2] if which == 'clean' else cur[2][3]) if _ok else -_viol
+                        by_idx[idx] = (_ok, _obj,
+                                       (idx, cur[2][1], cur[2][2], cur[2][3], cur[2][4], zn))
+                        nrep += 1
+            log(f"phase 2 [{tag}] inflection repair: {nrep} point(s) repaired in place "
+                f"(shallow wiggle removed, L/D preserved); rest fall through to rebuild")
+
+        # FIX 2(a) GUARANTEE PASS: rebuild every point from the <=1-inflection feasible
+        # pool -- the max-objective 1-inflection airfoil meeting that point's floor.
+        # This is the airtight enforcement: it never lets a >1-inflection leak artifact
+        # be reported, and (because it maximizes over ALL 1-inflection airfoils found,
+        # not one solve) it also recovers the best genuine 1-inflection value per floor.
+        oi = 0 if which == "clean" else 1     # pool tuple index of the maximized objective (clean=0, rough=1)
+        fi = 1 if which == "clean" else 0     # pool tuple index of the floored quantity
+        nfix = 0
+        for idx in range(M_):
+            eps = float(floor_levels[idx])
+            cur = by_idx[idx]
+            cur_z = cur[2][5]
+            cur_ok = bool(cur[0]) and _exact_lower_inflections(cur_z[8:16], _lec) <= 1
+            elig = [p for p in pool if p[fi] >= eps - 0.5]
+            if not elig:
+                continue
+            best = max(elig, key=lambda p: p[oi])
+            # (not cur_ok): >1-inflection point MUST be rebuilt from the pool. The 2nd clause
+            # ("pool has a higher-objective 1-inflection airfoil at this floor") normally also
+            # recovers the best genuine value per eps -- but with a sparse pool it collapses every
+            # eps onto the corner, and when --repair-inflection has already put a valid, distinct
+            # <=1-inflection airfoil at each point that collapse UNDOES the repair. So skip the 2nd
+            # clause when repairing: keep the distinct repaired solves, only rebuild the leftovers.
+            if (not cur_ok) or (best[oi] > cur[2][2 + oi] + 1e-9
+                                and not params.get('repair_inflection', False)):
+                z = best[3]
+                by_idx[idx] = (True, best[oi],
+                               (idx, eps, best[0], best[1], best[2], z))
+                nfix += 1
+        # any point that STILL is >1-inflection (pool had nothing meeting its floor)
+        # inherits the highest-floor 1-inflection pool airfoil (dominated but valid).
+        if pool:
+            hi = max(pool, key=lambda p: p[fi])
+            for idx in range(M_):
+                z = by_idx[idx][2][5]
+                if _exact_lower_inflections(z[8:16], _lec) > 1:
+                    by_idx[idx] = (True, hi[oi],
+                                   (idx, float(floor_levels[idx]), hi[0], hi[1], hi[2], hi[3]))
+                    nfix += 1
+        log(f"phase 2 [{tag}] 1-inflection guarantee pass: {nfix} point(s) rebuilt from "
+            f"pool of {len(pool)} feasible <=1-inflection airfoils")
+        return [by_idx[i][2] for i in range(M_)]
+
+    if rank == 0:
+        # Seed the <=1-inflection guarantee pool with the phase-1 locator airfoils:
+        # the DIVERSE multistart already produced many feasible 1-inflection airfoils
+        # spanning the whole rough range, for free -- this keeps sparse rough bands from
+        # collapsing onto a single airfoil in the guarantee pass.
+        _lecm = params.get('lower_signflip_le_cutoff', 0.02)
+        _p1 = []
+        for _r in r1:
+            _zz, _dd = _r[2], _r[3]
+            if _dd.get('violation', 1e9) <= FEAS and _exact_lower_inflections(_zz[8:16], _lecm) <= 1:
+                _p1.append((_dd['lod_clean'], _dd['lod_rough'], _dd['violation'], np.asarray(_zz, float)))
+        for _zz, _dd in xd.values():
+            if _dd.get('violation', 1e9) <= FEAS and _exact_lower_inflections(_zz[8:16], _lecm) <= 1:
+                _p1.append((_dd['lod_clean'], _dd['lod_rough'], _dd['violation'], np.asarray(_zz, float)))
+        log(f"phase 1 seeded {len(_p1)} feasible <=1-inflection airfoils into the guarantee pool")
+        if getattr(args, "two_sided", False):
+            # clean half: max CLEAN vs rough floor; rough half: max ROUGH vs clean floor; merge.
+            Mh = M // 2 + 1
+            cpts = run_sweep("clean", np.linspace(r_lo, r_hi, Mh), z_clean, z_rmax, "clean-half", extra_pool=_p1)
+            rpts = run_sweep("rough", np.linspace(c_lo, c_hi, Mh), z_rmax, z_clean, "rough-half", extra_pool=_p1)
+            merged = [p for p in (cpts + rpts) if p[4] <= FEAS]
+            _dom = lambda p, q: (q[3] >= p[3] and q[2] >= p[2] and (q[3] > p[3] or q[2] > p[2]))
+            nondom = [p for i, p in enumerate(merged)
+                      if not any(_dom(p, q) for j, q in enumerate(merged) if j != i)]
+            spts = sorted(nondom, key=lambda p: p[3])            # rough L/D ascending
+            pts = [(i, p[1], p[2], p[3], p[4], p[5]) for i, p in enumerate(spts)]
+            log(f"phase 2 TWO-SIDED: clean {len(cpts)} + rough {len(rpts)} -> {len(pts)} nondominated")
+        else:
+            eps_levels = eps_grid(r_lo, r_hi, M, params)
+            pts = run_sweep("clean", eps_levels, z_clean, z_rmax, "front", extra_pool=_p1)
         for p in pts:
             log(f"phase 2: point {p[0]:2d}  eps={p[1]:6.1f}  "
                 f"L/D=({p[2]:.1f},{p[3]:.1f})  viol={p[4]:.1e}")

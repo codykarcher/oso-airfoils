@@ -305,6 +305,38 @@ def dinterp(x0, xp, yp):
     return h00 * ya + h10 * (h * ma) + h01 * yb + h11 * (h * mb)
 
 
+def dinterp_linear(x0, xp, yp):
+    """Differentiable PIECEWISE-LINEAR interpolation, clamped at the endpoints
+    exactly like numpy.interp (xp increasing in value; x0/xp/yp entries each Dual
+    or float). This is the linear counterpart of ``dinterp`` and is used ONLY for
+    the rough slope_ratio: the GA's feasibility reference computes that ratio with
+    np.interp (linear), while ``dinterp`` is cubic-Hermite and reads the design-alpha
+    slope ~2-3% high where the rough curve is rounding toward stall -- so Ipopt could
+    park the ratio at ~0.50 while the GA scored ~0.47-0.48. Matching the GA's linear
+    interpolant here makes the gradient optimise against the SAME slope_ratio the GA
+    judges feasibility with. (Only slope_ratio uses this; every other quantity keeps
+    the C1 cubic dinterp, which the objective needs for smoothness.)"""
+    nx = None
+    for s in (x0, *xp, *yp):
+        if isinstance(s, Dual):
+            nx = s.g.shape[0]
+            break
+    def prom(y):
+        return y if isinstance(y, Dual) or nx is None else Dual(y, np.zeros(nx))
+    xv = [_val(x) for x in xp]
+    x0v = _val(x0)
+    n = len(xv)
+    if n == 1 or x0v <= xv[0]:
+        return prom(yp[0])
+    if x0v >= xv[-1]:
+        return prom(yp[-1])
+    i = 0
+    while i < n - 1 and xv[i + 1] < x0v:
+        i += 1
+    xa, xb, ya, yb = xp[i], xp[i + 1], yp[i], yp[i + 1]
+    return ya + ((x0 - xa) / (xb - xa)) * (yb - ya)
+
+
 # ======================================================================
 # Aero sweep (each swept quantity becomes a list of Duals over z)
 # ======================================================================
@@ -602,7 +634,10 @@ def geometry_duals(up, lo, p, nx, psi_star=None):
         if kk <= n - 2:        t2 += (n - kk) * (n - kk - 1) * psi ** kk * (1 - psi) ** (n - kk - 2)
         Bp[:, kk] = b * t; Bpp[:, kk] = b * t2
     J2 = Cpp[:, None] * B + 2.0 * Cp[:, None] * Bp + C[:, None] * Bpp   # d(zeta'')/dcoeff
-    d2u_v = k.d2zeta_dpsi2(psi, 'upper'); d2l_v = k.d2zeta_dpsi2(psi, 'lower')
+    # d2zeta VALUES straight from the analytic Jacobian (zeta'' is linear in the coeffs, so
+    # zeta'' = J2 @ coeffs exactly -- verified == scalar k.d2zeta_dpsi2 to 3e-11). This drops
+    # the per-station scalar Kulfan curvature calls (a chunk of geometry_duals' 94.6% cost).
+    d2u_v = J2 @ up; d2l_v = J2 @ lo
     ec = p['ec_cutoff']; cb = const(p['curvature_bound'], nx)
     concave, aft = [], []
     # Per-station LINEAR curvature Duals (d2zeta is linear in the coeffs -> constant,
@@ -656,7 +691,7 @@ def geometry_duals(up, lo, p, nx, psi_star=None):
         # the conditioning). The LE region is excluded: d2l there is huge and always
         # convex (the class function forces it), so it can only carry the leading '+'
         # sign, never an extra flip.
-        inv_ws = 1.0 / p.get('lower_signflip_width', 0.05)
+        inv_ws = 1.0 / p.get('lower_signflip_width', 0.03)   # FIX 2(b): sharper gate (was 0.05) reduces the surrogate leak
         le_cut = p.get('lower_signflip_le_cutoff', 0.10)   # crossover never sits fwd of ~10% chord
         sf_terms = []
         for d2l, j in zip(D2L, interior):
@@ -730,6 +765,71 @@ def geometry_duals(up, lo, p, nx, psi_star=None):
     else:
         G['minrad_loc_u'] = const(0.0, nx); G['minrad_loc_l'] = const(0.0, nx)
     return G
+
+
+# ======================================================================
+# Curvature-acceleration envelope constraint (differentiable). |d2kappa/ds2(x_i)|
+# <= E_frozen(x_i) at fixed stations x_i>=XSTART, both surfaces. d2kappa/ds2 is the
+# EXACT analytic closed form (grid-independent) built from zeta'..zeta'''' (each
+# LINEAR in the coeffs), assembled here as Duals -> full-rank analytic Jacobian.
+# Returns per-station two-sided term pairs (E - d2k) and (E + d2k) so |d2k|<=E is a
+# pair of smooth inequalities (no non-smooth abs). Shares the frozen envelope and
+# the Jk basis with the GA via curvature_envelope, so the two match exactly.
+# ======================================================================
+def curvature_accel_terms(up, lo, p, nx):
+    from oso_airfoils.optimization import curvature_envelope as ce
+    T = ce.tau_to_T(p['tau'])
+    Etab = ce.E_TAB.get(T)
+    if Etab is None:
+        return [], []
+    te = p.get('TE_gap', 0.0)
+    stride = int(p.get('curvature_accel_stride', 2) or 1)
+    sidx = ce.STATION_IDX[::stride]
+    J1, J2, J3, J4 = ce.J1G, ce.J2G, ce.J3G, ce.J4G
+    hi, lo_t = [], []
+    for coeffs, te_off, is_up, Earr in ((up, +te / 2.0, True, Etab['upper']),
+                                        (lo, -te / 2.0, False, Etab['lower'])):
+        A = np.asarray(coeffs, float); M = len(A)
+        z1v = J1 @ A + te_off; z2v = J2 @ A; z3v = J3 @ A; z4v = J4 @ A
+        for i in sidx:
+            def _d(val, row):
+                return Dual(float(val), _cg(row, np.zeros(M), nx) if is_up
+                            else _cg(np.zeros(M), row, nx))
+            z1 = _d(z1v[i], J1[i]); z2 = _d(z2v[i], J2[i])
+            z3 = _d(z3v[i], J3[i]); z4 = _d(z4v[i], J4[i])
+            P = 1.0 + z1 * z1
+            kp = z3 * P ** -1.5 - 3.0 * z1 * z2 * z2 * P ** -2.5
+            kpp = (z4 * P ** -1.5
+                   - (9.0 * z1 * z2 * z3 + 3.0 * (z2 * z2 * z2)) * P ** -2.5
+                   + 15.0 * z1 * z1 * (z2 * z2 * z2) * P ** -3.5)
+            d2 = kpp / P - kp * z1 * z2 / (P * P)
+            E = float(Earr[i])
+            hi.append(E - d2)      # E - d2kappa >= 0
+            lo_t.append(E + d2)    # E + d2kappa >= 0  (two-sided |d2k| <= E)
+    return hi, lo_t
+
+
+def bulge_terms(lo, p, nx):
+    """Lower-surface secondary-bulge guard as Duals. For each mid-band station j:
+        (|kappa(2%)| + margin) - |kappa(x_j)| >= 0
+    i.e. lower-surface curvature may not climb back into a rising hump aft of the 2%
+    shoulder. Relative -> thickness-agnostic; slack unless the section is bulging. Shares
+    the exact reference/band/margin with curvature_envelope.bulge_violation (the GA path)."""
+    from oso_airfoils.optimization import curvature_envelope as ce
+    te = p.get('TE_gap', 0.0); te_off = -te / 2.0
+    margin = float(p.get('bulge_margin', ce.BULGE_MARGIN))
+    J1, J2 = ce._BJ1, ce._BJ2
+    A = np.asarray(lo, float); M = len(A)
+    z1v = J1 @ A + te_off; z2v = J2 @ A
+
+    def kap(i):                              # |kappa| = |zeta''| / (1+zeta'^2)^1.5 (lower surface)
+        z1 = Dual(float(z1v[i]), _cg(np.zeros(M), J1[i], nx))
+        z2 = Dual(float(z2v[i]), _cg(np.zeros(M), J2[i], nx))
+        P = 1.0 + z1 * z1
+        return dabs(z2) * P ** -1.5
+
+    kref = kap(0)                            # reference at the 2% shoulder
+    return [(kref + margin) - kap(i) for i in range(1, len(z1v))]   # each >= 0 feasible
 
 
 # ======================================================================
@@ -913,7 +1013,11 @@ def evaluate(z, ctx):
     R['stall_margin_clean'] = a_peak('c', pkc) - a_des
     R['stall_margin_rough'] = a_peak('r', pkr) - a_des
     R['lift_margin_clean'] = S['c']['cl'][pkc] - CLd
-    R['delta_cl_pct'] = (CLd - at('r', 'cl', a_des, pkr)) / CLd
+    # delta_cl reconciled to the GA's LINEAR-interp value: the GA reads the rough CL at
+    # design with np.interp, while cubic dinterp here sits ~1e-3 lower, so the gradient
+    # parked its high-clean tip ~2e-3 past the GA's roughness_delta_cl bound (GA-infeasible).
+    # Linear interp (matching the GA) closes that gap -- same reconciliation as slope_ratio.
+    R['delta_cl_pct'] = (CLd - dinterp_linear(a_des, ar[:pkr + 1], S['r']['cl'][:pkr + 1])) / CLd
     # rough lift-slope ratio (surrogate-trust): slope(dCL/dalpha) @ design / @ zero-lift on
     # the ROUGH polar. A curve that has rounded off (lost attached slope) before design =>
     # low ratio => the tool is extrapolating through incipient separation (a real test would
@@ -922,10 +1026,16 @@ def evaluate(z, ctx):
     # differences on the same interpolant. Needs the rough sweep to bracket zero-lift
     # (alpha_min_rough ~ -8; set in the driver).
     _srh = p.get('slope_ratio_h', 0.5)
-    _a0r = dinterp(0.0, S['r']['cl'][:pkr + 1], ar[:pkr + 1])   # rough zero-lift alpha
-    _adr = dinterp(CLd, S['r']['cl'][:pkr + 1], ar[:pkr + 1])   # rough design alpha
-    _m0 = (at('r', 'cl', _a0r + _srh, pkr) - at('r', 'cl', _a0r - _srh, pkr)) / (2 * _srh)
-    _md = (at('r', 'cl', _adr + _srh, pkr) - at('r', 'cl', _adr - _srh, pkr)) / (2 * _srh)
+    # slope_ratio is reconciled to the GA's discrete-polar value: use LINEAR interp
+    # (matching the GA's np.interp) for BOTH the CL=0 / CL=design anchors AND the
+    # +/-h slope samples, so the gradient can't park ~2-3% optimistic against a
+    # cubic-Hermite slope the GA never sees. Every other quantity keeps cubic dinterp.
+    _rcl = S['r']['cl'][:pkr + 1]; _rar = ar[:pkr + 1]
+    _at_lin = lambda a: dinterp_linear(a, _rar, _rcl)          # rough CL(alpha), linear
+    _a0r = dinterp_linear(0.0, _rcl, _rar)                     # rough zero-lift alpha (linear inverse-interp)
+    _adr = dinterp_linear(CLd, _rcl, _rar)                     # rough design alpha   (linear inverse-interp)
+    _m0 = (_at_lin(_a0r + _srh) - _at_lin(_a0r - _srh)) / (2 * _srh)
+    _md = (_at_lin(_adr + _srh) - _at_lin(_adr - _srh)) / (2 * _srh)
     R['rough_slope_ratio'] = _md / dmax(_m0, const(0.02, nx))
     off = p['alpha_falloff_offset']
     R['falloff_c_l'] = (at('c', 'lod', a_des - off, pkc) - R['lod_clean']) / R['lod_clean']
@@ -1007,6 +1117,19 @@ def evaluate(z, ctx):
                  'hmin', 'toothpick_h'):
         R[name] = G[name]
 
+    # curvature-acceleration envelope terms (only when enabled; gated on ctx to avoid
+    # the extra Dual work on every solve). Two-sided per-station: E-d2k>=0 AND E+d2k>=0.
+    if ctx.get('curvature_accel', False):
+        R['curv_accel_hi'], R['curv_accel_lo'] = curvature_accel_terms(up, lo, p, nx)
+    else:
+        R['curv_accel_hi'], R['curv_accel_lo'] = [], []
+
+    # lower-surface secondary-bulge guard (no rising interior curvature hump); gated on ctx
+    if ctx.get('bulge', False):
+        R['bulge_lo'] = bulge_terms(lo, p, nx)
+    else:
+        R['bulge_lo'] = []
+
     diag = dict(alpha_design=a_des.v, lod_clean=R['lod_clean'].v, lod_rough=R['lod_rough'].v,
                 cl_max_clean=R['cl_max_clean'].v, stall_c=R['stall_margin_clean'].v,
                 stall_r=R['stall_margin_rough'].v, tau=R['tau'].v, area=R['area'].v,
@@ -1051,6 +1174,8 @@ CONSTRAINT_GROUPS = {
     'curvature':             'no upper-surface concavity',
     'aft_curvature':         'upper-surface aft (TE) curvature >= curvature_bound',
     'lower_signflip':        'lower-surface curvature changes sign at most once, via a free split location psi* (needs n_aux>=1)',
+    'curvature_accel':       '|d2kappa/ds2(x)| <= frozen envelope E(x/c) at each station x>=XSTART, both surfaces (needs ctx["curvature_accel"]=True)',
+    'bulge':                 'lower-surface curvature may not rise into a secondary mid-chord hump: |kappa(x_band)| <= |kappa(2%)| + margin (needs ctx["bulge"]=True)',
     'min_radius_location':   'min radius-of-curvature stays near the LE (needs targets)',
     'rough_xtr_cap':         'rough reported Top/Bot_Xtr <= forced trip (no numeric re-laminarization exploit)',
     'moment':                'clean (and optional rough) CM >= -|CM*_min| across +-cm_alpha_band of design',
@@ -1082,10 +1207,17 @@ def constraint_list(R, p, rough_lod_min=None, clean_lod_min=None, enabled=None):
     def add(name, kind, dual):
         C.append((name, kind, dual))
 
-    if rough_lod_min is not None:                                  # epsilon-constraint floor
-        add('rough_lod_floor', 'ineq', R.lod_rough - rough_lod_min)
+    # epsilon-constraint floor. Default 'ineq' (LoD_rough >= eps): the max-clean solve may
+    # drift to a HIGHER rough than eps, which lets several eps collapse onto the rough corner.
+    # With p['eps_floor_equality'] the floor becomes an EQUALITY (LoD_rough == eps), pinning
+    # each point to its own eps so the front is evenly spaced along rough (at the cost of
+    # making a point INFEASIBLE where no airfoil sits at exactly that rough -- an honest gap
+    # instead of a duplicate). Applies to both sweep directions.
+    _floor_kind = 'eq' if (p is not None and p.get('eps_floor_equality', False)) else 'ineq'
+    if rough_lod_min is not None:
+        add('rough_lod_floor', _floor_kind, R.lod_rough - rough_lod_min)
     if clean_lod_min is not None:                                  # dual epsilon-constraint floor
-        add('clean_lod_floor', 'ineq', R.lod_clean - clean_lod_min)
+        add('clean_lod_floor', _floor_kind, R.lod_clean - clean_lod_min)
 
     if on('non_intersection'):
         add('non_intersection', 'ineq', R.hmin - 1e-4)
@@ -1147,6 +1279,17 @@ def constraint_list(R, p, rough_lod_min=None, clean_lod_min=None, enabled=None):
         # so psi* exists; otherwise R.lower_signflip_terms is empty (no-op).
         for i, d in enumerate(R.lower_signflip_terms):
             add(f'lower_signflip_{i}', 'ineq', d)
+    if on('curvature_accel'):
+        # |d2kappa/ds2(x_i)| <= frozen E(x/c) at each station (both surfaces), imposed
+        # two-sided so |.| stays smooth: E - d2k >= 0 AND E + d2k >= 0. Empty (no-op)
+        # unless ctx['curvature_accel'] was set so evaluate() built the terms.
+        for i, d in enumerate(getattr(R, 'curv_accel_hi', [])):
+            add(f'curv_accel_hi_{i}', 'ineq', d)
+        for i, d in enumerate(getattr(R, 'curv_accel_lo', [])):
+            add(f'curv_accel_lo_{i}', 'ineq', d)
+    if on('bulge'):
+        for i, d in enumerate(getattr(R, 'bulge_lo', [])):
+            add(f'bulge_lo_{i}', 'ineq', d)
     if on('min_radius_location'):
         if p.get('min_radius_location_upper') is not None:
             add('minrad_loc_u', 'ineq', p['min_radius_location_upper'] - R.minrad_loc_u)

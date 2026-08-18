@@ -711,6 +711,7 @@ def _get_polar_records(
     # rfoil records are pre-computed; they live in the JSON and need no gap-fill.
     new_xfoil_records: list[dict] = []
     fresh_nf_records:  list[dict] = []
+    fresh_surrogate_records: list[dict] = []   # nqfoil/nxfoil: recomputed fresh (like neuralfoil), not cached
     _afl = None  # lazy-load geometry only when a computation is required
     all_vals = _expand_sweep_values(sweep_range)
 
@@ -719,7 +720,9 @@ def _get_polar_records(
             N_crit, xtp_u, xtp_l = tc[0], tc[1], tc[2]
             for tool in tools:
                 if tool in ('nxfoil', 'nqfoil'):
-                    new_records.extend(
+                    if _afl is None:
+                        _afl = _load_kulfan(family, stem, afl_root)
+                    fresh_surrogate_records.extend(
                         _polar_surrogate(_afl, all_vals, re, N_crit, xtp_u, xtp_l,
                                          tool, neuralfoil_model))
                 elif tool == 'neuralfoil':
@@ -774,7 +777,7 @@ def _get_polar_records(
 
     # Return cached non-neuralfoil records + freshly computed neuralfoil records.
     non_nf = [r for r in existing if r.get('source') != 'neuralfoil']
-    return non_nf + fresh_nf_records
+    return non_nf + fresh_nf_records + fresh_surrogate_records
 
 
 # ── get-or-compute: boundary layer ───────────────────────────────────────────

@@ -41,7 +41,8 @@ TAU_MATCH_TOL      = 0.015     # max |tau_ref - tau_run| for a family match
 # plus a per-tool default step. neuralfoil is cheap so it uses a fine step;
 # xfoil/qfoil use a coarser one. Override the step with -a / --alpha-step.
 ALPHA_BOUNDS       = (-5, 30)
-ALPHA_STEP_DEFAULT = {'neuralfoil': 0.25, 'xfoil': 0.25, 'qfoil': 0.25}
+ALPHA_STEP_DEFAULT = {'neuralfoil': 0.25, 'xfoil': 0.25, 'qfoil': 0.25,
+                      'nqfoil': 0.25, 'nxfoil': 0.25}
 
 # Turbulence / transition conditions   [N_crit, xtp_upper, xtp_lower]
 TURB_CASES_CLEAN   = [[9.0, 1.0,  1.0 ]]
@@ -159,8 +160,14 @@ def main():
     parser.add_argument(
         '-t', '--tool',
         default='neuralfoil',
-        choices=['neuralfoil', 'xfoil', 'qfoil'],
-        help='Aerodynamic solver (default: neuralfoil).',
+        choices=['neuralfoil', 'xfoil', 'qfoil', 'nqfoil', 'nxfoil'],
+        help='Aerodynamic solver (default: neuralfoil). nqfoil/nxfoil go through the same '
+             'BatchSurrogate the optimizer uses (model set by --model).',
+    )
+    parser.add_argument(
+        '--model',
+        default='xxlarge',
+        help='Surrogate model size for nqfoil/nxfoil (default: xxlarge, matching the GA/gradient).',
     )
     parser.add_argument(
         '-a', '--alpha-step',
@@ -266,6 +273,7 @@ def main():
         afl_root        = afl_root,
         reference_airfoils = reference_airfoils if reference_airfoils else None,
         cl_design       = cl_design,
+        neuralfoil_model = args.model,   # model_size for nqfoil/nxfoil surrogate (and neuralfoil)
     )
     print(f'Saved → {figure_path}')
 

@@ -46,12 +46,44 @@ After installing dependencies, the airfoil optimization may be run simply by fol
 The following is a quickstart:
 ```
 cd oso_airfoils/runfiles
-mpirun -n 8 python -m mpi4py common_runner.py quickstart.json
+mpirun -n 8 python -m mpi4py -m oso_airfoils.optimization quickstart.json
 ```
 
-Note that this will move the `quickstart.json` file to the run directory.
+Note that this will copy the `quickstart.json` file into the run directory.
 
 On a 2022 M1 MacBook Air, this runs roughly 500 generations in roughly 4 hours.
+
+There is a single entry point, `python -m oso_airfoils.optimization`, which accepts one
+or more case files. It picks how to run them automatically: MPI when launched under
+`mpirun`, a batched GPU path when the case uses a neural-network surrogate and a CUDA
+device is present, and a plain serial loop otherwise. To pin the choice, pass
+`--execution serial|mpi|gpu-batched`. Passing several case files runs them in lockstep
+so that a GPU evaluates the whole fleet in one batch per generation:
+
+```
+python -m oso_airfoils.optimization t21.yaml t24.yaml t27.yaml
+```
+
+See `oso_airfoils/optimization/README.md` for the execution modes, the CLI options, and
+the package architecture.
+
+Run outputs and airfoil performance data live under `oso_airfoils/data/`: completed runs
+in `data/cases_<lo>_to_<hi>/case_<N>/`, and per-family aerodynamic data in
+`data/<family>/performance_data/` with plots in `data/<family>/polar_plots/`.
+`oso_airfoils/runfiles/` holds only run configurations and the scripts that generate them.
+
+
+Relationship to metafoil
+------------------------
+
+The aerodynamic solvers live in the companion **metafoil** package, which this project
+depends on.  `oso_airfoils.core`'s `xfoil_wrapper` and `qfoil_wrapper` are thin adapters:
+they dispatch alpha sweeps to metafoil's in-memory solvers and CL mode, flap deflections
+and explicitly-pointed binaries to its file-I/O solvers, keeping only the argument
+reconciliation this project's call sites depend on.  Geometry comes from
+`metafoil.core.kulfan` (per-airfoil) and `metafoil.core.kulfan_torch` (batched,
+differentiable).  Use metafoil directly for complex-step gradients (`metafoil.cxfoil`,
+`metafoil.cqfoil`) and for the surrogate nets (`metafoil.nxfoil`, `metafoil.nqfoil`).
 
 
 Dependencies

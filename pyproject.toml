@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oso-airfoils"
+version = "0.0.1"
+dependencies = [
+  "numpy",
+  "scipy",
+  "torch",
+  "mpi4py",
+  "pint",
+  "matplotlib",
+  "pandas",
+  "pyyaml",
+  "natsort",
+  "Pillow",
+  "neuralfoil"
+]
+requires-python = ">=3.8"
+authors = [
+  {name = "David Maniaci",   email = "dcmania@sandia.gov"},
+  {name = "Alan Hsieh",      email = "ahsieh@sandia.gov"},
+  {name = "Cody Karcher",    email = "cody.karcher@csulb.edu"},
+]
+maintainers = [
+  {name = "David Maniaci",   email = "dcmania@sandia.gov"},
+  {name = "Alan Hsieh",      email = "ahsieh@sandia.gov"},
+  {name = "Cody Karcher",    email = "cody.karcher@csulb.edu"},
+]
+description = """
+Open Source Offshore Airfoils
+"""
+readme = "README.md"
+license = "MIT"
+license-files = ["LICEN[CS]E.*"]
+keywords = ["open-source","airfoils","wind turbines","hydrokinetic turbines","hydrofoils"]
+classifiers = [
+  "Programming Language :: Python"
+]
+
+[project.urls]
+Homepage = "https://github.com/sandialabs/oso-airfoils"
+Repository = "https://github.com/sandialabs/oso-airfoils.git"
+
+[project.scripts]
+oso-polar        = "oso_airfoils.postprocessing.oso_polar:main"
+oso-bl           = "oso_airfoils.postprocessing.oso_bl:main"
+oso-legacy       = "oso_airfoils.postprocessing.oso_legacy:main"
+oso-cp           = "oso_airfoils.postprocessing.oso_cp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oso_airfoils"]

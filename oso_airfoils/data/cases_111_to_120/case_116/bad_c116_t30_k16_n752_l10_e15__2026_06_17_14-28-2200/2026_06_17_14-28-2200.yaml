@@ -1,0 +1,134 @@
+# Fundamental Run Parameters
+case_number                               : 116
+N_k                                       : 16
+N_pop                                     : 752
+N_generations                             : 500
+CL                                        : 1.0
+Re                                        : 1.50e+6
+
+# Thickness Specific Parameters
+# OSO Values
+# taus     = [      0.15,       0.18,       0.21,       0.24,       0.27,       0.30,       0.33,       0.36 ]
+# TE_gaps  = [   0.00196,    0.00230,    0.00262,    0.00751,    0.01012,    0.01140,    0.01140,    0.01140 ]
+# Ixx_con  = [0.00011000, 0.00017438, 0.00027518, 0.00041096, 0.00058321, 0.00079640, 0.00105795, 0.00137822 ]
+# Iyy_con  = [0.00397999, 0.00436351, 0.00493714, 0.00561409, 0.00633417, 0.00706380, 0.00779600, 0.00855043 ]
+# Izz_con  = [0.00408809, 0.00454606, 0.00521632, 0.00602287, 0.00691323, 0.00785849, 0.00885328, 0.00991577 ]
+# A_con    = [0.08700496, 0.09995900, 0.11477620, 0.13051205, 0.14660942, 0.16289864, 0.17959744, 0.19731100 ]
+# ler_con  = [     0.007,      0.008,       0.01,      0.025,       0.03,       0.04,       0.06,       0.08 ]
+# cone_ang = [      10.0,       10.0,        5.0,        5.0,        5.0,        0.0,        0.0,        0.0 ]
+tau                                       : 0.3
+TE_gap                                    : 0.032760253333333336
+Ixx_con                                   : 0.0007964
+Iyy_con                                   : 0.0070638
+Izz_con                                   : 0.00785849
+A_con                                     : 0.16289864
+ler_con_upper                             : 0.031705041090132294
+ler_con_lower                             : 0.044303947253152134
+cone_angle                                : 0.0
+# Correction for thick airfoils
+target_cl                                 : null
+target_alpha                              : null
+
+# Performance parameters
+CMc_min                                   : null
+CMr_min                                   : null
+cp_min_design                             : -2.0
+cp_min_prestall                           : null
+percent_delta_cl_from_roughness_threshold : 0.1
+percent_LoD_falloff_threshold             : 0.15
+
+# Tool Parameters 
+tool                                      : "neuralfoil"
+xfoil_timelimit                           : 15
+outfile_leader                            : "../data/cases_111_to_120/case_116/"
+xfoil_path                                : null
+xfoil_tempfile_path_leader                : "t_"
+N_tries                                   : 1
+neuralfoil_model                          : "xxxlarge"
+
+# Unlikely to change
+# ------------------
+# Fundamental parameters
+continuation_file                         : null
+continuation_file_overwrite               : false
+
+# Geometry Parameters
+max_thickness_loc                         : 0.275
+max_thickness_loc_upper                   : 0.275
+max_thickness_loc_lower                   : 0.275
+ler_skew_factor                           : 1.9
+curvature_bound                           : -750
+ec_cutoff                                 : 0.9
+te_frac                                   : 0.95
+min_radius_location_upper                 : null
+min_radius_location_lower                 : null
+min_radius_location_cutoff                : 0.08
+
+# Performance Parameters
+target_stall_margin                       : 4.0
+alpha_falloff_offset                      : 1.0
+cm_alpha_band                             : 5.0
+cl_max_limit_clean                        : null
+cl_max_limit_rough                        : null
+cp_min_at_alpha_offset                    : null
+cp_min_alpha_offset                       : null
+
+# Objective Weights
+toothpick_height                          : 0.00
+toothpick_location                        : 0.85
+stall_margin_clean_weighting              : 1.0e+2
+stall_margin_rough_weighting              : 1.0e+2
+lift_margin_clean_weighting               : 0.5
+cl_max_limit_clean_weighting              : 1.0e+4
+cl_max_limit_rough_weighting              : 1.0e+4
+delta_cl_from_roughness_weighting         : 1.0e+4
+LoD_falloff_weighting                     : 2000.0
+ixx_weighting                             : 1.0e+6
+iyy_weighting                             : 1.0e+4
+izz_weighting                             : 1.0e+4
+a_weighting                               : 1.0e+4
+leading_edge_radius_upper_weighting       : 1.0e+3
+leading_edge_radius_lower_weighting       : 1.0e+3
+min_radius_location_upper_weighting       : 1.0e+4
+min_radius_location_lower_weighting       : 1.0e+4
+max_thickness_weighting                   : 1.0e+4
+max_thickness_upper_weighting             : 1.0e+4
+max_thickness_lower_weighting             : 1.0e+4
+radii_skew_weighting                      : 1.0e+3
+curvature_weighting                       : 100
+lower_surface_curvature_weighting         : 1.0e+2
+te_cone_violation_weighting               : 1.0e+5
+CL_target_weighting                       : 1.0e+4
+clean_moment_weighting                    : 1.0e+4
+rough_moment_weighting                    : 1.0e+4
+cp_min_design_weighting                   : 1.0e+4
+cp_min_at_alpha_offset_weighting          : 1.0e+4
+cp_min_prestall_weighting                 : 1.0e+4
+toothpick_weighting                       : 0.0
+infeasibility_penalty                     : 1.0e+4
+
+# Tool run and flow params
+N_crit_clean                              : 9.0
+xtp_u_clean                               : 1.0
+xtp_l_clean                               : 1.0
+alpha_min_clean                           : 0
+alpha_max_clean                           : 30
+alpha_step_clean                          : 1
+N_crit_rough                              : 3.0
+xtp_u_rough                               : 0.05
+xtp_l_rough                               : 0.05
+alpha_min_rough                           : 0
+alpha_max_rough                           : 20
+alpha_step_rough                          : 1
+
+# GA params
+N_points_moi                              : 20
+N_crossovers                              : 3
+probability_of_mutation                   : 0.3
+maximum_parent_fraction                   : 0.3
+front1_cap_fraction                       : 0.5
+N_mutations                               : 4
+
+
+
+

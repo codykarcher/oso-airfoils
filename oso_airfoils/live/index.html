@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSO · live</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#232a34; --ink:#e6edf3; --dim:#8b949e;
+    --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#f6f8fa; --panel:#fff; --line:#d8dee4; --ink:#1f2328; --dim:#59636e;
+           --accent:#0969da; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1500px;margin:0 auto;padding:18px 18px 40px}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px}
+  h1{font-size:17px;margin:0;font-weight:600;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:12.5px;font-family:var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block;
+       margin-right:6px;vertical-align:1px}
+  .dot.live{background:var(--ok);animation:p 1.4s ease-in-out infinite}
+  .dot.done{background:var(--accent);animation:none}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:9px;margin:13px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 11px}
+  .stat .k{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+  .stat .v{font-family:var(--mono);font-size:18px;font-variant-numeric:tabular-nums;margin-top:2px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;
+        padding:12px 14px 13px;margin-bottom:13px}
+  .card h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
+           margin:0 0 9px;font-weight:600}
+  .card img{display:block;width:100%;height:auto;border-radius:6px;background:#fff}
+  .ctl{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin:2px 0 13px}
+  button{background:var(--panel);color:var(--ink);border:1px solid var(--line);
+         border-radius:7px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+  input[type=range]{flex:1;min-width:200px;accent-color:var(--accent)}
+  .savebar{display:flex;align-items:center;gap:9px;background:var(--panel);
+           border:1px solid var(--line);border-radius:11px;padding:9px 12px;margin-bottom:11px}
+  .savebar label{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+                 color:var(--dim);font-weight:600;white-space:nowrap}
+  .savebar input{flex:1;min-width:0;background:var(--bg);color:var(--ink);
+                 border:1px solid var(--line);border-radius:7px;padding:5px 9px;
+                 font:inherit;font-size:12px;font-family:var(--mono)}
+  .savebar input:focus{outline:none;border-color:var(--accent)}
+  .savebar input.dirty{border-color:var(--warn)}
+  .savemsg{font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap}
+  .savemsg.ok{color:var(--ok)} .savemsg.err{color:var(--bad)}
+  .ph{color:var(--dim);font-family:var(--mono);font-size:12px;padding:36px 0;text-align:center}
+  /* reference-airfoil bar, between the two plots */
+  .refbar{display:flex;align-items:center;gap:11px;flex-wrap:wrap;
+          background:var(--panel);border:1px solid var(--line);border-radius:11px;
+          padding:10px 13px;margin-bottom:13px}
+  .reflabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+            color:var(--dim);font-weight:600}
+  .fams{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+  .fam{background:transparent;border:1px solid var(--line);border-radius:999px;
+       padding:4px 12px;font-size:12.5px;color:var(--ink);cursor:pointer;
+       font-family:var(--mono);white-space:nowrap}
+  .fam:hover:not(:disabled){border-color:var(--accent)}
+  .fam[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fam:disabled{opacity:.34;cursor:not-allowed;text-decoration:line-through}
+  .picker{display:flex;gap:5px;align-items:center;margin-left:auto}
+  .picker input{background:var(--bg);color:var(--ink);border:1px solid var(--line);
+                border-radius:7px;padding:5px 9px;font:inherit;font-size:12.5px;
+                font-family:var(--mono);min-width:230px}
+  .picker input:focus{outline:none;border-color:var(--accent)}
+  .picker button{padding:5px 9px}
+  #refnote{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0}
+  .phasebar{display:flex;align-items:center;gap:.6rem;margin:.5rem 0 .9rem;
+    padding:.55rem .8rem;background:var(--panel);border:1px solid var(--line);
+    border-left:3px solid var(--accent);border-radius:6px;font-size:.95rem}
+  .phasedot{width:.6rem;height:.6rem;border-radius:50%;background:var(--accent);
+    flex:0 0 auto;animation:pulse 1.6s ease-in-out infinite}
+  .phasebar.done{border-left-color:var(--ok)}
+  .phasebar.done .phasedot{background:var(--ok);animation:none}
+  .phasesub{color:var(--dim);font-family:var(--mono);font-size:.85rem;margin-left:auto}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .grid{display:flex;gap:3px;margin:-4px 0 12px}
+  .grid i{flex:1 1 0;height:8px;border-radius:2px;background:var(--line)}
+  .grid i.solved{background:var(--warn)}
+  .grid i.feasible{background:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="h1title">OSO — live</h1>
+    <span class="sub" id="caseline">connecting…</span>
+  </header>
+  <div class="sub"><span class="dot" id="dot"></span><span id="status">waiting for state.json</span></div>
+
+  <div class="stats" id="stats"></div>
+
+  <!-- One cell per epsilon level: which front points have a feasible result,
+       which have only an infeasible one, and which are still pending. With
+       sub-solves ~30 s apart this is the thing that actually changes between
+       frames, so it gives the eye something to track. -->
+  <div class="grid" id="cover"></div>
+
+  <div class="savebar">
+    <label for="savepath">Save to</label>
+    <input id="savepath" spellcheck="false" autocomplete="off"
+           placeholder="(saving disabled for this run)">
+    <span class="savemsg" id="savemsg"></span>
+  </div>
+
+  <div class="ctl">
+    <button id="follow" aria-pressed="true">● Follow live</button>
+    <button id="play">▶ Replay</button>
+    <input type="range" id="scrub" min="0" max="0" value="0">
+    <span class="sub" id="scrublab">–</span>
+  </div>
+
+  <!-- What the optimizer is doing right now, in words. The GA has one mode, so
+       it reads as a single line; the gradient solver moves through distinct
+       phases (endpoints, cross-seed, sweep) whose meaning is not obvious from a
+       counter alone. Fed from state.json's phase_text, with `status` as fallback. -->
+  <div class="phasebar" id="phasebar">
+    <span class="phasedot" id="phasedot"></span>
+    <span id="phasetext">waiting for the optimizer…</span>
+    <span class="phasesub" id="phasesub"></span>
+  </div>
+
+  <div class="refbar">
+    <span class="reflabel">Reference</span>
+    <div class="fams" id="fams"></div>
+    <div class="picker">
+      <input id="aflpick" list="afllist" placeholder="search all 87 airfoils…" autocomplete="off">
+      <datalist id="afllist"></datalist>
+      <button id="aflclear" title="clear">✕</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span id="iterword">Generation</span> <span id="g2">–</span><span id="refnote"></span></h2>
+    <div id="figWrap" class="ph">waiting for first frame…</div>
+  </div>
+</div>
+
+<script>
+let F=[], meta=null, follow=true, cursor=0, playing=false, timer=null, lastN=-1;
+// The dashboard serves both optimizers. The GA counts GENERATIONS; the gradient
+// solver counts completed SUB-SOLVES, which are neither evenly spaced nor a
+// population step -- calling those "generations" would misdescribe the run. Both
+// labels come from state.json's meta, defaulting to the GA's wording so an older
+// state file still reads correctly.
+let ITERWORD='generation', ITERUNIT='gen';
+const el=id=>document.getElementById(id);
+const fmt=(v,d=1)=>(v==null||!isFinite(v))?'–':(+v).toFixed(d);
+// Runtime clock. Counts from meta.started (set by the driver at launch) to
+// state.updated while the run is live, and FREEZES at the last update once it
+// finishes -- otherwise a completed run would keep counting up for as long as
+// the tab stayed open, which reads as though it were still working.
+const fmtDur=sec=>{
+  if(sec==null||!isFinite(sec)||sec<0) return '–';
+  const s=Math.floor(sec), h=Math.floor(s/3600), m=Math.floor((s%3600)/60);
+  return h?`${h}:${String(m).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+          :`${m}:${String(s%60).padStart(2,'0')}`;
+};
+function runtimeSec(){
+  if(!meta||!meta.started) return null;
+  const live = window._live !== false;
+  const end = live ? (Date.now()/1000) : (window._updated || Date.now()/1000);
+  return end - meta.started;
+}
+
+/* swap an <img> only once the replacement has decoded, so the panel never flashes */
+function setImg(wrapId, src){
+  const wrap=el(wrapId), cur=wrap.querySelector('img');
+  if(cur && cur.dataset.src===src) return;
+  const im=new Image();
+  im.dataset.src=src;
+  im.onload=()=>{ wrap.classList.remove('ph'); wrap.replaceChildren(im); };
+  im.onerror=()=>{};
+  im.src=src;
+}
+
+function render(i){
+  const f=F[i]; if(!f) return;
+  el('g2').textContent=f.gen;
+  el('scrublab').textContent=ITERUNIT+' '+f.gen;
+  setImg('figWrap','frames/'+f.polar);
+  const rows = [
+    ['runtime', fmtDur(runtimeSec())],
+    [ITERWORD, `${f.gen}${(meta&&meta.target_gens)?' / '+meta.target_gens:''}`],
+    ['best clean L/D', fmt(f.lod_clean,1)],
+    ['best rough L/D', fmt(f.lod_rough,1)],
+    ['feasible', `${f.n_feasible}${meta?' / '+meta.N_pop:''}`],
+    ['surrogate', meta?meta.backend+' '+meta.model:'-'],
+  ];
+  // s/iteration only where iterations have a regular cadence. A gradient run's
+  // sub-solves land irregularly and in parallel, so a mean would invite a
+  // per-iteration reading that does not exist; it shows eta/rate instead.
+  const spg = window._spgMean ?? window._spg;
+  if (spg != null) rows.push(['s / '+ITERUNIT+' (mean)', fmt(spg,2)]);
+  if (f.eta_s != null) {
+    rows.push(['eta', fmtDur(f.eta_s)]);
+    rows.push(['rate', fmt(f.rate_per_min,1)+' /min']);
+  }
+  el('stats').innerHTML = rows.map(([k,v])=>
+    `<div class="stat"><div class="k">${k}</div>`+
+    `<div class="v"${k==='runtime'?' id="rtval"':''}>${v}</div></div>`).join('');
+}
+
+function setCursor(i,user){
+  cursor=Math.max(0,Math.min(F.length-1,i));
+  el('scrub').value=cursor;
+  if(user){ follow=false; el('follow').setAttribute('aria-pressed','false'); }
+  render(cursor);
+}
+
+async function poll(){
+  try{
+    const r=await fetch('state.json?t='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    paintSave(d);
+    meta=d.meta;
+    if(meta){
+      ITERWORD = meta.iter_word || 'generation';
+      ITERUNIT = meta.iter_unit || 'gen';
+      const w = ITERWORD.charAt(0).toUpperCase()+ITERWORD.slice(1);
+      const h = el('iterword'); if(h) h.textContent = w;
+      const lbl = meta.solver_label || 'OSO airfoil GA';
+      document.title = lbl + ' · live';
+      const t = el('h1title'); if(t) t.textContent = lbl + ' — live';
+    }
+    window._spg=d.s_per_gen; window._spgMean=d.s_per_gen_mean; F=d.frames||[];
+    if(meta && !famsBuilt && meta.families) buildFamilies(meta.families);
+    if(meta && !libBuilt && meta.library)   buildLibrary(meta.library);
+    el('scrub').max=Math.max(0,F.length-1);
+    if(meta) el('caseline').textContent =
+      `${meta.case} · τ=${meta.tau} · C_L=${meta.CL} · Re=${(meta.Re/1e6).toFixed(1)}e6 · `+
+      `N_pop=${meta.N_pop} · ${meta.backend} ${meta.model} (${meta.device})`;
+    // prefix match: the gradient driver writes 'done  16/20 feasible', which an
+    // exact !== 'done' test never caught, so its runtime clock never stopped.
+    const live = !/^done/.test(String(d.status||''));
+    window._live = live; window._updated = d.updated;
+    const g=el('cover');
+    if(g){ const fr=F[cursor]||{};
+      g.innerHTML = (fr.grid||[]).map(s=>`<i class="${s}"></i>`).join(''); }
+    el('dot').className='dot '+(live?'live':'done');
+    // phase banner: what the optimizer is doing, in words
+    const pb=el('phasebar'), pt=el('phasetext'), ps=el('phasesub');
+    if(pb&&pt){
+      pt.textContent = d.phase_text || d.status || '–';
+      ps.textContent = (d.generation!=null && meta && meta.target_gens)
+        ? `${d.generation} / ${meta.target_gens} ${ITERWORD}s` : '';
+      pb.classList.toggle('done', !live);
+    }
+    el('status').textContent = live
+      ? `${d.status} — ${ITERWORD} ${d.generation}` + (d.s_per_gen?` · ${d.s_per_gen.toFixed(2)}s/${ITERUNIT}`:'')
+        + (F.length?` · ${F.length} frames rendered`:'')
+      : `complete — ${d.generation} ${ITERWORD}s, ${F.length} frames`;
+    if(F.length && follow && !playing && F.length-1!==lastN){ lastN=F.length-1; setCursor(F.length-1); }
+    else if(F.length && cursor>=F.length) setCursor(F.length-1);
+  }catch(e){
+    el('status').textContent='waiting for state.json … ('+e.message+')';
+    el('dot').className='dot';
+  }
+}
+
+/* Replay: steps EVERY rendered generation and LOOPS. Because it reads F on each
+   tick, frames rendered while it is looping get picked up on the next pass --
+   the replay grows with the run. Only "Follow live" stops it. */
+// The clock ticks independently of the state poll: state.json refreshes every
+// few seconds at best (and only when a frame is rendered), so driving the clock
+// off it would make it jump in visible steps rather than run.
+setInterval(()=>{ const e=el('rtval'); if(e) e.textContent=fmtDur(runtimeSec()); }, 1000);
+
+const FRAME_MS=260;
+
+function startReplay(){
+  playing=true; follow=false;
+  el('follow').setAttribute('aria-pressed','false');
+  el('play').textContent='❚❚ Pause';
+  clearInterval(timer);
+  timer=setInterval(()=>{
+    if(!F.length) return;
+    setCursor(cursor+1>=F.length ? 0 : cursor+1);   // wrap = loop
+  },FRAME_MS);
+}
+function stopReplay(){
+  playing=false; clearInterval(timer); timer=null;
+  el('play').textContent='▶ Replay';
+}
+
+el('follow').onclick=()=>{
+  follow=!follow;
+  el('follow').setAttribute('aria-pressed',follow);
+  if(follow){ stopReplay(); if(F.length) setCursor(F.length-1); }
+};
+el('scrub').oninput=e=>{ stopReplay(); setCursor(+e.target.value,true); };
+el('play').onclick=()=>{ playing?stopReplay():startReplay(); };
+/* ---- reference airfoil: family buttons (radio, click-active-to-clear) + picker ---- */
+let selFamily=null, selAirfoil=null, famsBuilt=false, libBuilt=false;
+
+async function sendSelection(){
+  const q = selAirfoil ? 'airfoil='+encodeURIComponent(selAirfoil)
+          : selFamily  ? 'family='+encodeURIComponent(selFamily) : '';
+  try{ await fetch('/select?'+q,{cache:'no-store'}); }catch(e){}
+  paintSelection();
+}
+function paintSelection(){
+  for(const b of document.querySelectorAll('.fam'))
+    b.setAttribute('aria-pressed', String(!selAirfoil && b.dataset.key===selFamily));
+  el('aflpick').value = selAirfoil || '';
+  const note = selAirfoil ? ` · vs ${selAirfoil}`
+             : selFamily ? ` · vs ${(META_FAMS.find(f=>f.key===selFamily)||{}).stem||selFamily}` : '';
+  el('refnote').textContent = note;
+}
+let META_FAMS=[];
+function buildFamilies(list){
+  META_FAMS=list; famsBuilt=true;
+  el('fams').innerHTML='';
+  for(const f of list){
+    const b=document.createElement('button');
+    b.className='fam'; b.dataset.key=f.key; b.textContent=f.label;
+    b.setAttribute('aria-pressed','false');
+    if(!f.available){
+      b.disabled=true;
+      b.title = f.stem ? `no member within tolerance — nearest ${f.stem} at t/c ${f.tau}`
+                       : 'no geometry in the store';
+    } else {
+      b.title = `${f.stem} · t/c ${f.tau}`;
+      b.onclick=()=>{                       // radio; clicking the active one clears it
+        selAirfoil=null;
+        selFamily = (selFamily===f.key) ? null : f.key;
+        sendSelection();
+      };
+    }
+    el('fams').appendChild(b);
+  }
+}
+function buildLibrary(list){
+  libBuilt=true;
+  const dl=el('afllist'); dl.innerHTML='';
+  for(const a of list){
+    const o=document.createElement('option');
+    o.value=a.stem; o.label=`${a.family} · t/c ${a.tau}`;
+    dl.appendChild(o);
+  }
+  el('aflpick').placeholder=`search all ${list.length} airfoils…`;
+  const valid=new Set(list.map(a=>a.stem));
+  el('aflpick').onchange=()=>{
+    const v=el('aflpick').value.trim();
+    if(!v){ selAirfoil=null; sendSelection(); return; }
+    if(!valid.has(v)){ el('aflpick').value=selAirfoil||''; return; }
+    selAirfoil=v; selFamily=null; sendSelection();
+  };
+  el('aflclear').onclick=()=>{ selAirfoil=null; selFamily=null; sendSelection(); };
+}
+
+/* ---- save path: autofills, commits on Enter or blur, moves existing files ---- */
+let savePathServer=null, saveEditing=false;
+const savebox=el('savepath'), savemsg=el('savemsg');
+
+function paintSave(d){
+  if(d.save_path!==undefined && d.save_path!==null){
+    savePathServer=d.save_path;
+    if(!saveEditing && savebox.value!==savePathServer){
+      savebox.value=savePathServer; savebox.classList.remove('dirty');
+    }
+    savebox.placeholder='';
+  }
+  if(d.save_status){
+    const ok=d.save_status.startsWith('ok');
+    savemsg.textContent=d.save_status.replace(/^(ok|error): /,'');
+    savemsg.className='savemsg '+(ok?'ok':'err');
+  }
+}
+async function commitSave(){
+  const v=savebox.value.trim();
+  saveEditing=false;
+  if(!v || v===savePathServer){ savebox.classList.remove('dirty'); return; }
+  savemsg.textContent='moving…'; savemsg.className='savemsg';
+  try{ await fetch('/savepath?path='+encodeURIComponent(v),{cache:'no-store'}); }
+  catch(e){ savemsg.textContent='request failed'; savemsg.className='savemsg err'; }
+}
+savebox.addEventListener('input',()=>{ saveEditing=true; savebox.classList.add('dirty'); });
+savebox.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){ e.preventDefault(); commitSave(); savebox.blur(); }
+  if(e.key==='Escape'){ saveEditing=false; savebox.value=savePathServer||'';
+                        savebox.classList.remove('dirty'); savebox.blur(); }
+});
+savebox.addEventListener('blur',commitSave);
+
+poll(); setInterval(poll,900);
+</script>
+</body>
+</html>

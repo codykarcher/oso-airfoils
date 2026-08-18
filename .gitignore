@@ -1,19 +1,34 @@
-*__pycache__*
-*.pyc
-*.egg-info
-*.DS_Store*
-*.ipynb_checkpoints
-*.coverage
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Boundary layer output files (XFoil/RFoil temp output)
 *.bl
-*.gif
-*NWEA*.png
-*released_designs/OSO_2025_WT2/c67*
-*released_designs/OSO_2025_WT2/rfoil_data_bad_36*
-*postprocessing/cases/**/*.png
-*postprocessing/cases/**/*.jpg
-*postprocessing/cases/**/*.pdf
-*postprocessing/cases/**/*.svg
-*postprocessing/cases/**/*.eps
-*postprocessing/cases/**/*.dat
-*postprocessing/cases/**/postprocess.py
-*released_designs/**/postprocess.py
+
+# Temp files
+t_*
+
+# Editor
+.vscode/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OpenFAST / TurbSim binary wind files
+*.bts
+
+# Simulation log files
+*.log
+
+# Working draft of the 2026 paper
+publications/papers/2026/initial_draft/
+

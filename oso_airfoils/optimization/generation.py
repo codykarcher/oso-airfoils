@@ -63,14 +63,28 @@ SORT_MODES = ('penalty', 'constrained')
 
 
 def get_nsga_sort(params):
-    """Resolve the non-dominated sort for this case."""
-    mode = (params or {}).get('nsga_sort', 'penalty') or 'penalty'
+    """Resolve the non-dominated sort for this case.
+
+    For the constrained sort, an optional eps-constrained relaxation is applied when
+    ``cap_eps0`` is set: the feasibility tolerance starts at ``cap_eps0`` and shrinks
+    linearly to 0 by progress ``cap_eps_tighten_frac`` of the run (default 0.8), then
+    stays strict. This lets a high-corner (initially infeasible) warm-start refine onto
+    the true boundary instead of fleeing to the feasible interior.
+    """
+    p = params or {}
+    mode = p.get('nsga_sort', 'penalty') or 'penalty'
     if mode not in SORT_MODES:
         raise ValueError(f"nsga_sort must be one of {list(SORT_MODES)}, got {mode!r}")
     if mode == 'constrained':
         from oso_airfoils.optimization.ga_functions_constrained import NSGA_sort
-    else:
-        from oso_airfoils.optimization.ga_functions import NSGA_sort
+        eps0 = p.get('cap_eps0')
+        if eps0 is None:
+            return NSGA_sort
+        prog = min(max(float(p.get('_ga_progress', 0.0)), 0.0), 1.0)
+        tf = float(p.get('cap_eps_tighten_frac', 0.8))
+        eps = float(eps0) * max(0.0, 1.0 - prog / tf) if tf > 0 else 0.0
+        return lambda dta, Nv, No: NSGA_sort(dta, Nv, No, eps=eps)
+    from oso_airfoils.optimization.ga_functions import NSGA_sort
     return NSGA_sort
 
 
@@ -124,15 +138,33 @@ def parse_params(params):
     #                  flip them (see ga_functions.mutateChromosome). Kept ONLY so those
     #                  historical runs stay reproducible; select it explicitly to use it.
     # Defaults to 'corrected' -- new runs get true bit-flip mutation without opting in.
+    #   'gaussian'   -- real-coded: SBX crossover + Gaussian mutation with an annealed
+    #                   absolute sigma (large early, small late) for controlled steps.
+    #   'polynomial' -- real-coded: SBX crossover + polynomial mutation (Deb).
+    # The real-coded modes act directly on the coefficient values so they can make the
+    # small controlled nudges the binary bit-flip operators cannot (see ga_functions).
     mutation_mode = params.get('mutation_mode', 'corrected') or 'corrected'
-    if mutation_mode not in ('legacy', 'corrected'):
-        raise ValueError(f"mutation_mode must be 'legacy' or 'corrected', got {mutation_mode!r}")
+    if mutation_mode not in ('legacy', 'corrected', 'gaussian', 'polynomial'):
+        raise ValueError("mutation_mode must be one of 'legacy','corrected',"
+                         f"'gaussian','polynomial', got {mutation_mode!r}")
+
+    # Real-coded operator knobs (harmless when a binary mode is selected).
+    eta_c = float(params.get('sbx_eta', 15.0))          # SBX spread (larger => nearer parents)
+    eta_m = float(params.get('poly_eta', 20.0))         # polynomial-mutation spread (larger => smaller steps)
+    sbx_prob = float(params.get('sbx_per_var_prob', 0.5))
+    # Gaussian sigma is annealed geometrically over the run from sigma0 -> sigma_min
+    # using the driver-injected progress (0 at start, ->1 at the last generation).
+    sigma0   = float(params.get('gauss_sigma0', 0.10))
+    sigma_min = float(params.get('gauss_sigma_min', 0.005))
+    progress = min(max(float(params.get('_ga_progress', 0.0)), 0.0), 1.0)
+    sigma = sigma0 * (sigma_min / sigma0) ** progress if sigma0 > 0 else 0.0
 
     return dict(tau=tau, TE_gap=TE_gap, N_crossovers=N_crossovers,
                 probability_of_mutation=probability_of_mutation,
                 maximum_parent_fraction=maximum_parent_fraction,
                 front1_cap_fraction=front1_cap_fraction,
-                N_mutations=N_mutations, mutation_mode=mutation_mode)
+                N_mutations=N_mutations, mutation_mode=mutation_mode,
+                eta_c=eta_c, eta_m=eta_m, sbx_prob=sbx_prob, sigma=sigma)
 
 
 #: Absolute tolerance on the achieved max thickness. The scalar path relied on scipy's
@@ -320,6 +352,10 @@ def produce_children(population, normalizationVector, encodingTypes, lowerBounds
             ins['probabilityOfMutation'] = probability_of_mutation
             ins['N_mutations'] = N_mutations
             ins['mutation_mode'] = mutation_mode
+            ins['eta_c'] = cfg['eta_c']
+            ins['eta_m'] = cfg['eta_m']
+            ins['sigma'] = cfg['sigma']
+            ins['sbx_prob'] = cfg['sbx_prob']
             ipList.append(ins)
             remainingMembers.remove(pi1)
             remainingMembers.remove(pi2)

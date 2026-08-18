@@ -315,15 +315,114 @@ def crossoverChromosomes(parent1, parent2, Ncrossovers=1):
         pl2 = c2
     return "".join(c1), "".join(c2)
     
-def breedDesignVectors(x1, x2, normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=3, probabilityOfMutation=0.10, N_mutations=1, mutation_mode='corrected'):
-    # normalizationVector = [v.guess.to(v.units).magnitude for v in formulation.variables_only]
-    # mutation_mode: 'corrected' (default, true bit flip) or 'legacy' (reproduces published OSO runs)
-    # (true bit flip). The default is deliberately 'legacy' so that existing configs
-    # keep their behaviour; new runs must opt in explicitly.
-    _mutate = _get_mutation_operator(mutation_mode)
+# ---------------------------------------------------------------------------------
+# REAL-CODED operators (new). The binary path above encodes each variable in an
+# IEEE-754-style bit layout and flips random bits -- an exponent-bit flip scales the
+# variable by 2**k, so step sizes are wildly non-uniform and the operator cannot make
+# the controlled ~1e-3 nudges needed to walk along a thin active-constraint boundary.
+# These operators act directly on the real coefficient values with controlled,
+# bounded steps. Selected via mutation_mode='gaussian' or 'polynomial'; both pair with
+# SBX crossover. No gradient information is used -- still fully black-box.
+# ---------------------------------------------------------------------------------
 
-    ec1 = np.array(x1)/np.array(normalizationVector)
-    ec2 = np.array(x2)/np.array(normalizationVector)
+def sbxCrossover(x1, x2, lowerBounds, upperBounds, eta_c=15.0, per_var_prob=0.5):
+    """Simulated Binary Crossover (Deb & Agrawal), bounded. Per variable, with prob
+    ``per_var_prob``, blends the two parents with a spread controlled by ``eta_c``
+    (larger => children closer to parents). Variables not crossed are copied through."""
+    x1 = np.asarray(x1, float); x2 = np.asarray(x2, float)
+    c1 = x1.copy(); c2 = x2.copy()
+    ic = 1.0 / (eta_c + 1.0)
+    for i in range(len(x1)):
+        if random.random() > per_var_prob:
+            continue
+        if abs(x1[i] - x2[i]) < 1e-14:
+            continue
+        xl, xu = lowerBounds[i], upperBounds[i]
+        if xu <= xl:
+            continue
+        y1, y2 = (x1[i], x2[i]) if x1[i] < x2[i] else (x2[i], x1[i])
+        u = random.random()
+        # lower child
+        beta = 1.0 + 2.0 * (y1 - xl) / (y2 - y1)
+        alpha = 2.0 - beta ** (-(eta_c + 1.0))
+        betaq = (u * alpha) ** ic if u <= 1.0 / alpha else (1.0 / (2.0 - u * alpha)) ** ic
+        cc1 = 0.5 * ((y1 + y2) - betaq * (y2 - y1))
+        # upper child
+        beta = 1.0 + 2.0 * (xu - y2) / (y2 - y1)
+        alpha = 2.0 - beta ** (-(eta_c + 1.0))
+        betaq = (u * alpha) ** ic if u <= 1.0 / alpha else (1.0 / (2.0 - u * alpha)) ** ic
+        cc2 = 0.5 * ((y1 + y2) + betaq * (y2 - y1))
+        cc1 = min(max(cc1, xl), xu)
+        cc2 = min(max(cc2, xl), xu)
+        if random.random() < 0.5:
+            c1[i], c2[i] = cc2, cc1
+        else:
+            c1[i], c2[i] = cc1, cc2
+    return c1, c2
+
+
+def polynomialMutation(x, lowerBounds, upperBounds, per_var_prob, eta_m=20.0):
+    """Polynomial mutation (Deb). Per variable, with prob ``per_var_prob``, adds a
+    bounded polynomial-distributed perturbation whose spread is set by ``eta_m``
+    (larger => smaller steps). Scales to each variable's [lb, ub] range."""
+    y = np.asarray(x, float).copy()
+    im = 1.0 / (eta_m + 1.0)
+    for i in range(len(y)):
+        if random.random() > per_var_prob:
+            continue
+        xl, xu = lowerBounds[i], upperBounds[i]
+        if xu <= xl:
+            continue
+        delta1 = (y[i] - xl) / (xu - xl)
+        delta2 = (xu - y[i]) / (xu - xl)
+        u = random.random()
+        if u < 0.5:
+            val = 2.0 * u + (1.0 - 2.0 * u) * ((1.0 - delta1) ** (eta_m + 1.0))
+            deltaq = val ** im - 1.0
+        else:
+            val = 2.0 * (1.0 - u) + 2.0 * (u - 0.5) * ((1.0 - delta2) ** (eta_m + 1.0))
+            deltaq = 1.0 - val ** im
+        y[i] = min(max(y[i] + deltaq * (xu - xl), xl), xu)
+    return y
+
+
+def gaussianMutation(x, lowerBounds, upperBounds, per_var_prob, sigma):
+    """Gaussian mutation with a (typically annealed) absolute std ``sigma`` in
+    coefficient units. Per variable, with prob ``per_var_prob``, adds N(0, sigma) and
+    clips to bounds. ``sigma`` is annealed by the caller (large early -> small late)."""
+    y = np.asarray(x, float).copy()
+    for i in range(len(y)):
+        if random.random() > per_var_prob:
+            continue
+        y[i] = min(max(y[i] + random.gauss(0.0, sigma), lowerBounds[i]), upperBounds[i])
+    return y
+
+
+#: mutation_mode values that trigger the real-coded path (SBX + that mutation).
+REAL_CODED_MODES = ('gaussian', 'polynomial')
+
+
+def breedDesignVectors(x1, x2, normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=3, probabilityOfMutation=0.10, N_mutations=1, mutation_mode='corrected', eta_c=15.0, eta_m=20.0, sigma=0.05, sbx_prob=0.5):
+    # normalizationVector = [v.guess.to(v.units).magnitude for v in formulation.variables_only]
+    # mutation_mode: 'legacy'/'corrected' (binary bit path) or 'gaussian'/'polynomial'
+    # (real-coded path: SBX crossover + real mutation, controlled bounded steps).
+    ec1 = np.array(x1, float) / np.array(normalizationVector)
+    ec2 = np.array(x2, float) / np.array(normalizationVector)
+
+    if mutation_mode in REAL_CODED_MODES:
+        # Real-coded path -- operate directly on the (normalized) coefficient values.
+        # Bounds/normVec here are [-2,2]/1, so ec == the raw Kulfan coefficients.
+        c1, c2 = sbxCrossover(ec1, ec2, lowerBounds, upperBounds,
+                              eta_c=eta_c, per_var_prob=sbx_prob)
+        if mutation_mode == 'gaussian':
+            c1 = gaussianMutation(c1, lowerBounds, upperBounds, probabilityOfMutation, sigma)
+            c2 = gaussianMutation(c2, lowerBounds, upperBounds, probabilityOfMutation, sigma)
+        else:  # 'polynomial'
+            c1 = polynomialMutation(c1, lowerBounds, upperBounds, probabilityOfMutation, eta_m)
+            c2 = polynomialMutation(c2, lowerBounds, upperBounds, probabilityOfMutation, eta_m)
+        return c1 * np.array(normalizationVector), c2 * np.array(normalizationVector)
+
+    _mutate = _get_mutation_operator(mutation_mode)
 
     chm1 = encodeChromosome(ec1, encodingTypes, lowerBounds, upperBounds)
     chm2 = encodeChromosome(ec2, encodingTypes, lowerBounds, upperBounds)
@@ -364,8 +463,13 @@ def breedDesignVectorsParallel(ipts):
     # thing for all work. Pass mutation_mode='legacy' explicitly only to reproduce
     # previously published OSO runs. See mutateChromosome() for why.
     mutation_mode = ipts.get('mutation_mode', 'corrected')
+    # real-coded operator knobs (ignored by the binary path)
+    eta_c = ipts.get('eta_c', 15.0)
+    eta_m = ipts.get('eta_m', 20.0)
+    sigma = ipts.get('sigma', 0.05)
+    sbx_prob = ipts.get('sbx_prob', 0.5)
     # formulation = ipts['formulation']
-    children = breedDesignVectors(x1,x2,normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=Ncrossovers, probabilityOfMutation=probabilityOfMutation, N_mutations=N_mutations, mutation_mode=mutation_mode)
+    children = breedDesignVectors(x1,x2,normalizationVector, encodingTypes, lowerBounds, upperBounds, Ncrossovers=Ncrossovers, probabilityOfMutation=probabilityOfMutation, N_mutations=N_mutations, mutation_mode=mutation_mode, eta_c=eta_c, eta_m=eta_m, sigma=sigma, sbx_prob=sbx_prob)
     return children
 
 def newGeneration(fitnessFunction, population, normalizationVector, encodingTypes, lowerBounds, upperBounds, tau, processType='series', initalize=False):

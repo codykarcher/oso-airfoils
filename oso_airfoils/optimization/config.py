@@ -88,7 +88,7 @@ REPORTED_LABELS = [
     'con_mom_r', 'con_cpmin_design_clean', 'con_cpmin_design_rough',
     'con_cpmin_offset_clean', 'con_cpmin_offset_rough', 'con_cpmin_prestall_clean',
     'con_cpmin_prestall_rough', 'con_min_rad_loc_upper', 'con_min_rad_loc_lower',
-    'con_toothpick', 'pareto_index',
+    'con_toothpick', 'con_curvature_accel', 'con_bulge', 'viol', 'pareto_index',
 ]
 
 

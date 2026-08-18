@@ -218,6 +218,70 @@ class TorchKulfan:
                             N2=self._f.N2)
         return (s["d2zeta_upper"] if side == "upper" else s["d2zeta_lower"]).reshape(-1).detach().cpu().numpy()
 
+    # --- real-Kulfan-private interface used by objective_function._min_radius_location
+    # (the analytic first derivative for the min-radius roc). Mirrors
+    # metafoil.core.kulfan.Kulfan._surface_args / _dzeta_dpsi so this drop-in gives the
+    # SAME analytic d1 as the real Kulfan -> min_rad matches the gradient solver exactly.
+    # te_shift is 0 on the GA path (TE_gap only), matching the Kulfan default.
+    def _surface_args(self, side):
+        if side == "upper":
+            return self._u, 0.5 * self._te, 1.0
+        if side == "lower":
+            return self._l, -0.5 * self._te, -1.0
+        raise ValueError(f"side must be 'upper' or 'lower', got {side!r}")
+
+    def _dzeta_dpsi(self, coeffs, te_offset, psi):
+        from metafoil.core.kulfan import _bernstein_eval, _bernstein_deriv_eval
+        N1, N2 = self._f.N1, self._f.N2
+        psi = np.asarray(psi, float)
+        C = psi ** N1 * (1.0 - psi) ** N2
+        dC = (N1 * psi ** (N1 - 1) * (1.0 - psi) ** N2
+              - N2 * psi ** N1 * (1.0 - psi) ** (N2 - 1))
+        S = _bernstein_eval(np.asarray(coeffs, float), psi)
+        dS = _bernstein_deriv_eval(np.asarray(coeffs, float), psi)
+        return dC * S + C * dS + te_offset
+
+    # --- curvature and its arc-length derivatives, numerically IDENTICAL to
+    # metafoil.core.kulfan.Kulfan.{curvature,dcurvature_ds,d2curvature_ds2} (reuses the
+    # same general Leibniz helpers). Kept numpy-from-coeffs like _dzeta_dpsi above, so this
+    # drop-in answers the same curvature-derivative queries as the real Kulfan.
+    def _zeta_derivatives(self, psi, side, order):
+        from metafoil.core.kulfan import _bernstein_derivk_eval, _class_fn_derivk, _binom
+        coeffs, te_offset, _ = self._surface_args(side)
+        coeffs = np.asarray(coeffs, float); psi = np.asarray(psi, float)
+        N1, N2 = self._f.N1, self._f.N2
+        out = []
+        for k in range(1, int(order) + 1):
+            zk = np.zeros_like(psi)
+            for j in range(k + 1):
+                zk = zk + _binom(k, j) * _class_fn_derivk(psi, N1, N2, j) \
+                    * _bernstein_derivk_eval(coeffs, psi, k - j)
+            if k == 1:
+                zk = zk + te_offset
+            out.append(zk)
+        return out
+
+    def curvature(self, psi, side="upper"):
+        """Signed curvature kappa = zeta'' / (1+zeta'^2)^1.5 (matches Kulfan.curvature)."""
+        z1, z2 = self._zeta_derivatives(psi, side, 2)
+        return z2 / (1.0 + z1 * z1) ** 1.5
+
+    def dcurvature_ds(self, psi, side="upper"):
+        """First arc-length derivative d(kappa)/ds (matches Kulfan.dcurvature_ds)."""
+        z1, z2, z3 = self._zeta_derivatives(psi, side, 3)
+        P = 1.0 + z1 * z1
+        return (z3 * P ** -1.5 - 3.0 * z1 * z2 * z2 * P ** -2.5) * P ** -0.5
+
+    def d2curvature_ds2(self, psi, side="upper"):
+        """Second arc-length derivative d^2(kappa)/ds^2 (matches Kulfan.d2curvature_ds2
+        and curvature_envelope.d2k_ds2_float)."""
+        z1, z2, z3, z4 = self._zeta_derivatives(psi, side, 4)
+        P = 1.0 + z1 * z1
+        kp = z3 * P ** -1.5 - 3.0 * z1 * z2 * z2 * P ** -2.5
+        kpp = (z4 * P ** -1.5 - (9.0 * z1 * z2 * z3 + 3.0 * z2 ** 3) * P ** -2.5
+               + 15.0 * z1 * z1 * z2 ** 3 * P ** -3.5)
+        return kpp / P - kp * z1 * z2 / (P * P)
+
 
 def _selftest(n=6, seed=0):
     """Validate the batched geometry against per-object metafoil.Kulfan for a random pop."""

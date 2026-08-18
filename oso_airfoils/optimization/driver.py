@@ -148,6 +148,8 @@ def run(cases, evaluator, verbose=None):
             if root:
                 for c in active:
                     nv, et, lb, ub = _ga_bounds(c)
+                    # progress in [0,1] for annealed real-coded operators (sigma schedule)
+                    c.params['_ga_progress'] = c.counter / max(int(c.N_generations), 1)
                     c.sortedData, c.children = produce_children(c.pop, nv, et, lb, ub,
                                                                c.params)
             children = evaluator.broadcast([c.children for c in active] if root else None)

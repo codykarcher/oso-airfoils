@@ -222,10 +222,32 @@ class Case:
         """Seed generation 0, either fresh or reconstructed from a continuation file."""
         if self.is_continuation:
             self.pop = self._restore_population()
+        elif self.params.get('seed_population_file'):
+            # WARM-START (not a continuation): load only the DESIGN VECTORS from a prior
+            # run's snapshot and hand them back as a fresh gen-0 population, so the driver
+            # RE-EVALUATES them under THIS run's params. Used for two-phase constraint
+            # activation -- phase 1 (cap off) explores to the high corner, phase 2 seeds
+            # from it and re-scores every member with the cap on, avoiding stale fitness.
+            self.pop = self._seed_from_file(self.params['seed_population_file'])
         else:
             self.pop = newMember(int(self.N_k / 2), self.tau, self.N_pop,
                                  te_gap=self.te_gap)
         return self.pop
+
+    def _seed_from_file(self, path):
+        """Design-vectors-only population from a snapshot (K_upper+K_lower per member),
+        matched to N_pop (truncated, or topped up with fresh random members)."""
+        snap = latest_snapshot(path)
+        data = read_input_file(snap)
+        pop = [list(e['K_upper']) + list(e['K_lower']) for e in data['population']]
+        pop = np.array(pop, float)
+        if len(pop) > self.N_pop:
+            pop = pop[:self.N_pop]
+        elif len(pop) < self.N_pop:
+            extra = newMember(int(self.N_k / 2), self.tau, self.N_pop - len(pop),
+                              te_gap=self.te_gap)
+            pop = np.vstack([pop, np.array(extra, float)])
+        return pop
 
     def _restore_population(self):
         """Rebuild the population array from a saved snapshot.

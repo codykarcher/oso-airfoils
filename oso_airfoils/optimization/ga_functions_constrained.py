@@ -67,35 +67,58 @@ import numpy as np
 # Reuse the crowding utilities from the baseline module so there is a single
 # source of truth for crowding distance.
 from oso_airfoils.optimization.ga_functions import _crowding_distance, crowding_sort  # noqa: F401
+from oso_airfoils.optimization import config as _cfg
+
+# Column offset (from the first reported column, i.e. relative to Nvars) of the
+# total-constraint-violation `viol` written by objective_function. Derived from the
+# canonical label order so it stays correct if columns are reordered.
+_VIOL_OFF = _cfg.REPORTED_LABELS.index('viol')
+_CONTAG_OFF = _cfg.REPORTED_LABELS.index('con_tag')
+
+# Threshold below which a member is treated as feasible (0 == no violation; the
+# tolerance absorbs float round-off in the summed constraint magnitudes).
+_FEAS_TOL = 1e-9
 
 
-def _feasible_and_violation(dta, Nvars, feas_off=2, obj1_off=0, obj2_off=1,
-                            lodc_off=4, lodr_off=5):
+def _feasible_and_violation(dta, Nvars, eps=0.0, viol_off=_VIOL_OFF, **_ignored):
     """Return (feasible_mask, total_violation) arrays aligned to ``dta`` rows.
 
-    Feasibility comes from the ``con_tag`` column (>= 1.0 means feasible). Total
-    violation is the recovered constraint penalty ``conpen`` (0 for feasible
-    rows), used only to rank infeasible solutions against each other.
+    Reads objective_function's dedicated ``viol`` column: the sum of the raw
+    (non-negative) geometric constraint magnitudes plus any aero constraint
+    promoted into the feasibility set. A member is feasible iff ``viol`` is ~0.
+    This replaces the earlier reconstruction of the *weighted* penalty from the
+    objective columns -- Deb's rules need the true unweighted violation.
     """
     arr = np.asarray(dta, dtype=float)
-    feas = arr[:, Nvars + feas_off] >= 1.0
-    conpen = (0.5 * (arr[:, Nvars + obj1_off] + arr[:, Nvars + obj2_off])
-              + 0.5 * (arr[:, Nvars + lodc_off] + arr[:, Nvars + lodr_off]))
-    viol = np.where(feas, 0.0, np.maximum(conpen, 0.0))
+    viol = np.maximum(arr[:, Nvars + viol_off], 0.0)
+    # Feasibility is keyed off the objective's OWN ``con_tag`` (col Nvars+2), so the
+    # constrained sort's feasible set EXACTLY matches the con_tag front filter used at
+    # collection -- including the per-constraint 1e-3 tolerance and the promoted aero/cap
+    # groups, which the raw ``viol`` sum does not reproduce. ``viol`` is retained only to
+    # RANK infeasible members (Deb: smaller total violation dominates).
+    feas = arr[:, Nvars + _CONTAG_OFF] >= 0.5
+    # eps-constrained relaxation (Takahama & Sakai): also admit near-feasible members whose
+    # total violation is within the current tolerance eps. With eps shrinking to 0 the
+    # population refines onto the boundary; eps=0 (default) is strict con_tag feasibility.
+    if eps > 0.0:
+        feas = feas | (viol <= eps)
     return feas, viol
 
 
-def NSGA_sort(dta, Nvars, Nobj, **col_kwargs):
+def NSGA_sort(dta, Nvars, Nobj, eps=0.0, **col_kwargs):
     """Constrained non-dominated sort. Same I/O contract as the baseline:
     input rows ``[design vars, objectives, ...]``; output rows are the same with
     a ``front_number`` column appended (last), ordered by front then crowding.
+
+    ``eps`` is the current feasibility tolerance for the eps-constrained relaxation
+    (0 => strict Deb constraint-domination).
     """
     dta = np.array(dta, dtype=float)
     n = len(dta)
     if n == 0:
         return dta
 
-    feas, viol = _feasible_and_violation(dta, Nvars, **col_kwargs)
+    feas, viol = _feasible_and_violation(dta, Nvars, eps=eps, **col_kwargs)
 
     domination_count = np.zeros(n, dtype=int)
     dominated_solutions = [[] for _ in range(n)]

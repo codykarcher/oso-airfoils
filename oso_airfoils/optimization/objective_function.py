@@ -96,8 +96,78 @@ def airfoil_fitness(x, solver=None, kulfan=None):
             return res
     return res
 
+def _lower_curvature_sign_changes(lower_coeffs, le_cutoff=0.02):
+    """Exact number of lower-surface curvature sign changes (inflections) in (le_cutoff, 1),
+    ANALYTICALLY -- no grid, no deadband. For the standard class function N1=0.5, N2=1 the
+    curvature d2zeta/dpsi2 = psi^(-1.5) * P(psi), where P is a polynomial built from the
+    Bernstein shape S: with g=(1-psi)S,  P = -0.25 g + psi g' + psi^2 g''. Since psi^(-1.5)>0
+    on (0,1), the curvature's sign changes are exactly P's simple real roots there."""
+    from numpy.polynomial import polynomial as Pl
+    from math import comb
+    w = np.asarray(lower_coeffs, float); n = len(w) - 1
+    S = np.zeros(n + 1)                                   # Bernstein -> monomial coeffs (low->high)
+    for i in range(n + 1):
+        b = np.asarray(Pl.polypow([1.0, -1.0], n - i))   # (1-psi)^(n-i)
+        for j, e in enumerate(b):
+            S[i + j] += comb(n, i) * e * w[i]
+    g = Pl.polymul(S, [1.0, -1.0])                        # (1-psi) * S
+    gp = Pl.polyder(g); gpp = Pl.polyder(g, 2)
+    P = Pl.polyadd(Pl.polyadd(-0.25 * g, Pl.polymul([0.0, 1.0], gp)),
+                   Pl.polymul([0.0, 0.0, 1.0], gpp))
+    r = Pl.polyroots(P)
+    r = np.sort(r[np.abs(r.imag) < 1e-9].real)
+    r = r[(r > le_cutoff) & (r < 1.0)]
+    flips = 0
+    for root in r:                                        # count roots where P actually flips sign
+        if np.sign(Pl.polyval(root - 1e-6, P)) != np.sign(Pl.polyval(root + 1e-6, P)):
+            flips += 1
+    return flips
+
+
+# Debug trace of the hard aero-constraint violations (delta_cl / lod_falloff /
+# lod_falloff_2 / slope_ratio / transition_slope). Inert unless _AERO_DEBUG is set
+# True by a diagnostic caller; costs a list append per aero constraint when on.
+_AERO_DEBUG = False
+_AERO_TRACE = []
+
+
+def _parabolic_vertex_f(x0, x1, x2, y0, y1, y2):
+    """x-location of the vertex of the parabola through three points (float version
+    of gradient_objective._parabolic_vertex). Sub-grid stand-in for the discrete argmin."""
+    d0 = x1 - x0; d2 = x1 - x2
+    num = d0 * d0 * (y1 - y2) - d2 * d2 * (y1 - y0)
+    den = d0 * (y1 - y2) - d2 * (y1 - y0)
+    return x1 - 0.5 * num / den
+
+
+def _min_radius_location(afl_geo, side, cutoff):
+    """Sub-grid (parabolic-vertex) location of the minimum radius-of-curvature on one
+    surface, over the interior psi grid within ``cutoff``. The key reconciliation with the
+    gradient solver is the PARABOLIC vertex (vs the old discrete ``np.argmin`` that snapped
+    the location to a grid node ~1 cell ~= 1.2e-3 aft of the true vertex, rejecting gradient
+    airfoils parked on this constraint's boundary). Uses metafoil's closed-form first
+    (``_dzeta_dpsi`` == J1@coeffs + te) and second (``d2zeta_dpsi2``) derivatives, so the roc
+    and located vertex are IDENTICAL to the gradient solver's minrad_loc. Both methods are on
+    the real Kulfan AND the batched-geometry drop-in (batch_geometry.TorchKulfan) -- which now
+    mirrors _surface_args/_dzeta_dpsi -- and both use the SAME (byte-identical) psi grid, so
+    the GA (batched) and gradient compute the same value. NOTE: the drop-in MUST provide these
+    two methods or this raises AttributeError and the whole airfoil is rejected (obj1=inf)."""
+    psi = np.asarray(afl_geo.psi, float)
+    pc = psi[1:-1]
+    coeffs, te_off, _ = afl_geo._surface_args(side)
+    d1 = np.asarray(afl_geo._dzeta_dpsi(coeffs, te_off, pc), float)
+    d2 = np.asarray(afl_geo.d2zeta_dpsi2(pc, side), float)
+    roc = (1.0 + d1 * d1) ** 1.5 / np.abs(d2)
+    cand = np.nonzero(pc <= cutoff)[0]
+    jm = int(cand[int(np.argmin(roc[cand]))])
+    if cand[0] < jm < cand[-1]:                              # parabolic vertex (matches gradient)
+        return float(_parabolic_vertex_f(pc[jm - 1], pc[jm], pc[jm + 1],
+                                         roc[jm - 1], roc[jm], roc[jm + 1]))
+    return float(pc[jm])                                     # window-edge fallback (matches gradient)
+
+
 def core_fitness_function(x, solver=None, kulfan=None):
-    """Objectives + 31 constraints for one design vector.
+    """Objectives + 33 constraints for one design vector.
 
     Parameters
     ----------
@@ -126,7 +196,11 @@ def core_fitness_function(x, solver=None, kulfan=None):
     Re_in       = x['params']['Re']
 
     N_reported    = 16
-    N_constraints = 31
+    N_constraints = 33   # +1 curvature_accel envelope (2026-07-30), +1 lower-bulge guard (2026-08-01)
+    # Total-constraint-violation value written for a rejected member: a large
+    # sentinel so the constraint-domination sort ranks rejects as worst-infeasible.
+    # (Ignored by the baseline 'penalty' sort, which reads only the objective cols.)
+    _REJECT_VIOL  = 1e9
 
     # for iiiiii in range (0,1):
     try:
@@ -274,9 +348,9 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # reject too large coefficients
         # ----------------------
         if max(abs(np.array(K_upper)))>2.0:
-            return [pid, np.inf, np.inf, False, -20] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -20] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
         if max(abs(np.array(K_lower)))>2.0:
-            return [pid, np.inf, np.inf, False, -30] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -30] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
         # ----------------------
         # build airfoil
@@ -291,7 +365,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         hts = afl_geo.getNormalizedHeight()
         if any(hts<0):
-            return [pid, np.inf, np.inf, False, -10] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -10] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
         # ----------------------
         # Sweep + unconverged-drop, factored so the clean/rough sweeps AND the
@@ -346,7 +420,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
             positive_peak_index_rough = _peak(cl_rough, alpha_rough)
         except:
             # no peak present in the sweep
-            return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
         # ----------------------
         # On-demand DOWNWARD polar extension (mirrors metafoil oso_gradient.evaluate).
@@ -376,7 +450,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
                 positive_peak_index_clean = _peak(cl_clean, alpha_clean)
                 positive_peak_index_rough = _peak(cl_rough, alpha_rough)
             except:
-                return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints
+                return [pid, np.inf, np.inf, False, -70] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
         # ----------------------
         # Find alpha_design. The (possibly extended) clean pre-stall sweep must
@@ -385,10 +459,10 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         if cl_clean[positive_peak_index_clean] <= cl_design:
             # design CL above CL_max -- airfoil cannot reach target CL
-            return [pid, np.inf, np.inf, False, -80] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -80] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
         if cl_design < cl_clean[0]:
             # design CL below the (extended) sweep start -- design point off the low end
-            return [pid, np.inf, np.inf, False, -85] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -85] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
         alpha_design = np.interp(cl_design,
                                  np.array(cl_clean)[0:positive_peak_index_clean],
                                  np.array(alpha_clean)[0:positive_peak_index_clean] )
@@ -398,6 +472,30 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         conpen = 0.0
         cons = []
+        # Constraint-domination scaffold: raw (unweighted) violation of any aero
+        # constraint PROMOTED into the feasibility set. In 'constrained' (Deb) sort
+        # mode, a constraint named in params['hard_constraints'] has its raw
+        # violation routed here (and OUT of the soft penalty `conpen`), so it gates
+        # feasibility instead of being traded off against L/D. In the default
+        # 'penalty' mode this stays 0 and every constraint remains a soft penalty
+        # (identical to the historical behaviour).
+        hard_viol   = 0.0
+        cap_viol    = 0.0   # raw rough_xtr_cap violation, folded into con_tag when the cap is on
+        aero_viol   = 0.0   # max raw violation of the soft aero constraints, folded into con_tag
+                            # when aero_constraints_hard is set (gradient enforces them HARD).
+        _aero_hard  = bool(x['params'].get('aero_constraints_hard', False))
+        _constrained = (x['params'].get('nsga_sort', 'penalty') == 'constrained')
+        _hard_cons   = set(x['params'].get('hard_constraints', None) or [])
+        def _track_aero(w, v, label=''):
+            # soft penalty (unchanged) AND, when aero_constraints_hard, track the raw
+            # violation so con_tag gates on it too -- matches the gradient, which enforces
+            # delta_cl/lod_falloff/lod_falloff_2/slope_ratio/transition_slope as HARD ineqs.
+            nonlocal conpen, aero_viol
+            conpen += w * v
+            if _aero_hard and v > aero_viol:
+                aero_viol = v
+            if _AERO_DEBUG:
+                _AERO_TRACE.append((label, float(v)))
 
         # ----------------------
         # Pure L/D performance
@@ -417,9 +515,26 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         # Stall margin
         # ----------------------
-        stall_margin_clean = alpha_clean[positive_peak_index_clean] - alpha_design
-        stall_margin_rough = alpha_rough[positive_peak_index_rough] - alpha_design
-        
+        # Stall margin measured to the PARABOLIC-refined stall-peak alpha (vertex of the
+        # parabola through the peak grid point and its two neighbours), matching
+        # gradient_objective._parabolic_vertex. The raw grid-argmax alpha is quantized to
+        # alpha_step (~1 deg), which made the GA UNDER-read the margin by up to a step vs
+        # the gradient: the gradient's own T21 corner reads 3.65 deg on the grid but 4.00
+        # refined, so its optimum (designed to sit exactly at the 4.0 target) looked
+        # infeasible to the GA. This reconciles the two optimizers' stall-margin
+        # constraint. (2026-07-29)
+        def _parab_peak_alpha(a, cl, pk):
+            if 0 < pk < len(cl) - 1:
+                x0, x1, x2 = a[pk - 1], a[pk], a[pk + 1]
+                y0, y1, y2 = cl[pk - 1], cl[pk], cl[pk + 1]
+                d0 = x1 - x0; d2 = x1 - x2
+                den = d0 * (y1 - y2) - d2 * (y1 - y0)
+                if abs(den) > 1e-12:
+                    return x1 - 0.5 * (d0 * d0 * (y1 - y2) - d2 * d2 * (y1 - y0)) / den
+            return a[pk]
+        stall_margin_clean = _parab_peak_alpha(alpha_clean, cl_clean, positive_peak_index_clean) - alpha_design
+        stall_margin_rough = _parab_peak_alpha(alpha_rough, cl_rough, positive_peak_index_rough) - alpha_design
+
         # target_stall_margin = 4.0
         # 0 if valid, otherwise 4.0-target_stall_margin
         if stall_margin_clean_weighting is not None and stall_margin_clean_weighting != 0.0:
@@ -483,7 +598,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # penalize if greater than 10%
         # assert(percent_delta_cl_clean_to_rough_at_alpha_design >=0)
         if delta_cl_from_roughness_weighting is not None and delta_cl_from_roughness_weighting != 0.0:
-            conpen += delta_cl_from_roughness_weighting * (max([percent_delta_cl_from_roughness_threshold, abs(percent_delta_cl_clean_to_rough_at_alpha_design)])-percent_delta_cl_from_roughness_threshold)
+            _track_aero(delta_cl_from_roughness_weighting, max([percent_delta_cl_from_roughness_threshold, abs(percent_delta_cl_clean_to_rough_at_alpha_design)])-percent_delta_cl_from_roughness_threshold, 'delta_cl')
         
         # ----------------------
         # clean L/D curve fall off
@@ -502,8 +617,8 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # penalize if greater than 15%
         # assert(percent_delta_LoD_clean_to_rough_at_alpha_design >=0)
         if LoD_falloff_weighting is not None and LoD_falloff_weighting != 0.0:
-            conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_clean_left )])-percent_LoD_falloff_threshold)
-            conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_clean_right)])-percent_LoD_falloff_threshold)
+            _track_aero(LoD_falloff_weighting, max([percent_LoD_falloff_threshold, abs(percent_change_LoD_clean_left )])-percent_LoD_falloff_threshold, 'lod_falloff_clean_L')
+            _track_aero(LoD_falloff_weighting, max([percent_LoD_falloff_threshold, abs(percent_change_LoD_clean_right)])-percent_LoD_falloff_threshold, 'lod_falloff_clean_R')
 
         # ----------------------
         # rough L/D curve fall off
@@ -522,8 +637,8 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # penalize if greater than 15%
         # assert(percent_delta_LoD_clean_to_rough_at_alpha_design >=0)
         if LoD_falloff_weighting is not None and LoD_falloff_weighting != 0.0:
-            conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_left )])-percent_LoD_falloff_threshold)
-            conpen += LoD_falloff_weighting * (max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_right)])-percent_LoD_falloff_threshold)
+            _track_aero(LoD_falloff_weighting, max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_left )])-percent_LoD_falloff_threshold, 'lod_falloff_rough_L')
+            _track_aero(LoD_falloff_weighting, max([percent_LoD_falloff_threshold, abs(percent_change_LoD_rough_right)])-percent_LoD_falloff_threshold, 'lod_falloff_rough_R')
 
         # ======================================================================
         # Constraints ported from the gradient optimizer (gradient_objective.py) to
@@ -548,7 +663,14 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # operating point. Mirrors gradient_objective's lod_falloff_2. ---------------
         LoD_falloff_2_weighting = x['params'].get('LoD_falloff_2_weighting', None)
         alpha_falloff_offset_2  = x['params'].get('alpha_falloff_offset_2', 2.0)
-        percent_LoD_falloff_threshold_2 = x['params'].get('percent_LoD_falloff_threshold_2', percent_LoD_falloff_threshold)
+        # ASYMMETRIC down/up thresholds, matching gradient_objective's lod_falloff_2:
+        # 15% BELOW design (the laminar-cliff direction) and 30% ABOVE. The GA previously
+        # used a single symmetric percent_LoD_falloff_threshold_2 (0.30), which was too loose
+        # on the down side and let laminar-cliff airfoils pass con_tag. (2026-07-29)
+        _tf_dn2 = x['params'].get('percent_LoD_falloff_threshold_2_down',
+                                  x['params'].get('percent_LoD_falloff_threshold_down', 0.15))
+        _tf_up2 = x['params'].get('percent_LoD_falloff_threshold_2_up',
+                                  x['params'].get('percent_LoD_falloff_threshold_up', 0.30))
         if LoD_falloff_2_weighting is not None and LoD_falloff_2_weighting != 0.0:
             for ap, lod, lod_des, pk in ((alpha_clean, LoD_clean, LoD_clean_at_design_alpha, _cpk),
                                          (alpha_rough, LoD_rough, LoD_rough_at_design_alpha, _rpk)):
@@ -556,7 +678,8 @@ def core_fitness_function(x, solver=None, kulfan=None):
                     continue
                 for da in (-alpha_falloff_offset_2, alpha_falloff_offset_2):
                     pc = (_pre_interp(alpha_design + da, ap, lod, pk) - lod_des) / lod_des
-                    conpen += LoD_falloff_2_weighting * (max([percent_LoD_falloff_threshold_2, abs(pc)]) - percent_LoD_falloff_threshold_2)
+                    _tf = _tf_dn2 if da < 0 else _tf_up2   # da<0 = below design (down)
+                    _track_aero(LoD_falloff_2_weighting, max([_tf, abs(pc)]) - _tf, 'lod_falloff_2')
 
         # --- (2) ROUGH LIFT-SLOPE RATIO: slope(dCL/dalpha) @ design / @ zero-lift on the
         # rough polar. A rough curve that has rounded off (lost attached slope) before
@@ -586,7 +709,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
                 m0 = (np.interp(a0 + srh, alr, clr) - np.interp(a0 - srh, alr, clr)) / (2 * srh)
                 md = (np.interp(ad + srh, alr, clr) - np.interp(ad - srh, alr, clr)) / (2 * srh)
                 rough_slope_ratio = md / max(m0, 0.02)
-                conpen += slope_ratio_weighting * (rough_slope_ratio_min - min([rough_slope_ratio_min, rough_slope_ratio]))
+                _track_aero(slope_ratio_weighting, rough_slope_ratio_min - min([rough_slope_ratio_min, rough_slope_ratio]), 'slope_ratio')
 
         # --- (3) ROUGH TRANSITION-LOCATION CAP: the rough case forces transition at
         # xtp~0.05, so a reported Top/Bot_Xtr above that trip is numerical
@@ -598,12 +721,25 @@ def core_fitness_function(x, solver=None, kulfan=None):
             xm = x['params'].get('rough_xtr_max', 0.05)
             _o2 = x['params'].get('alpha_falloff_offset_2', None)
             xoffs = [0.0, -alpha_falloff_offset, alpha_falloff_offset] + ([-_o2, _o2] if _o2 is not None else [])
+            _rxc_raw = 0.0   # SUMMED excess -> soft penalty (unchanged)
+            _rxc_max = 0.0   # per-SAMPLE max excess -> con_tag feasibility
             for xarr in (xtr_top_rough, xtr_bot_rough):
                 if xarr is None:
                     continue
                 for da in xoffs:
                     xt = _pre_interp(alpha_design + da, alpha_rough, xarr, _rpk)
-                    conpen += rough_xtr_cap_weighting * (max([xm, xt]) - xm)
+                    _ex = max([xm, xt]) - xm                  # >= 0 excess over the trip cap
+                    _rxc_raw += _ex
+                    if _ex > _rxc_max:
+                        _rxc_max = _ex
+            # con_tag uses the per-SAMPLE max: the gradient imposes rough_xtr_cap as a
+            # separate Ipopt inequality PER offset/surface (each within constr_viol_tol=1e-3),
+            # not a single summed bound -- so summing here would be ~N times too strict.
+            cap_viol = _rxc_max
+            if _constrained and 'rough_xtr_cap' in _hard_cons:
+                hard_viol += _rxc_raw                          # feasibility set (Deb sort)
+            else:
+                conpen += rough_xtr_cap_weighting * _rxc_raw   # soft penalty (baseline)
 
         # --- (4) CLEAN UPPER TRANSITION-SLOPE: forward march of the clean upper
         # transition point over the +xtr_slope_offset window above design. Large =>
@@ -616,7 +752,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
             toff = x['params'].get('xtr_slope_offset', 1.0)
             xtr_slope_c = (_pre_interp(alpha_design, alpha_clean, xtr_top_clean, _cpk)
                            - _pre_interp(alpha_design + toff, alpha_clean, xtr_top_clean, _cpk))
-            conpen += transition_slope_weighting * (max([xtr_slope_threshold, xtr_slope_c]) - xtr_slope_threshold)
+            _track_aero(transition_slope_weighting, max([xtr_slope_threshold, xtr_slope_c]) - xtr_slope_threshold, 'transition_slope')
 
         # ----------------------
         # structure surrogates
@@ -757,7 +893,10 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # Verify thickness, though this should be true by construction (except when nans were introduced)
         # ----------------------
         # negate because 0 is an unviolated constraint
-        cons.append(int(not abs(afl_geo.tau-tau)<1e-4))
+        # Continuous thickness violation (was a binary 1e-4 flag). This lets the global
+        # con_tag_tol (1e-3) match the gradient's Ipopt equality tolerance on tau, instead
+        # of a hard 1e-4 that rejected gradient airfoils solved only to ~1e-3. (2026-07-29)
+        cons.append(abs(afl_geo.tau - tau))
 
         # ----------------------
         # Penalize upper surface concavity (positive curvature)
@@ -774,9 +913,14 @@ def core_fitness_function(x, solver=None, kulfan=None):
         for i in range(0, len(second_derivative_approx)):
             if second_derivative_approx[i] >0:
                 positive_curvature.append(second_derivative_approx[i])
+        # MAX (not sum) of positive upper curvature: the gradient solver imposes concavity
+        # PER STATION (each d2zeta_upper <= 0, a relu-sum breaks Ipopt LICQ), so "no station
+        # exceeds tol" == max <= tol. The old sum let many sub-tol stations aggregate past the
+        # GA's con_tag_tol and reject gradient airfoils the gradient itself deemed feasible.
+        max_pos_curv = max(positive_curvature) if positive_curvature else 0.0
         if curvature_weighting is not None and curvature_weighting != 0.0:
-            conpen += curvature_weighting * sum(positive_curvature)
-            cons.append(sum(positive_curvature))
+            conpen += curvature_weighting * max_pos_curv
+            cons.append(max_pos_curv)
         else:
             cons.append(0.0)
         # ----------------------
@@ -797,14 +941,13 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         # Penalize lower surface curvature changes if it happens more than once
         # ----------------------
-        # Lower-surface curvature = analytic d2(zeta)/dpsi2 (see upper-surface note).
-        second_derivative_approx_l = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'lower'))
-        sflips = 0
-        sgn = second_derivative_approx_l[0]/abs(second_derivative_approx_l[0])
-        for i in range(0, len(second_derivative_approx_l)):
-            if second_derivative_approx_l[i]/abs(second_derivative_approx_l[i]) != sgn:
-                sgn = second_derivative_approx_l[i]/abs(second_derivative_approx_l[i])
-                sflips += 1
+        # EXPLICIT lower-surface inflection constraint (<= 1), computed ANALYTICALLY: the
+        # EXACT number of curvature sign changes over the lower surface. For N1=0.5,N2=1 the
+        # curvature d2zeta/dpsi2 = psi^-1.5 * P(psi) with P a polynomial, so its sign changes
+        # are exactly P's simple real roots in (le_cutoff, 1) -- no grid, no deadband, no psi*
+        # surrogate. cons entry = max(0, sflips-1), a HARD con_tag constraint. (2026-07-29)
+        _lecut = x['params'].get('le_signflip_cutoff', 0.02)
+        sflips = _lower_curvature_sign_changes(K_lower, _lecut)
         if lower_surface_curvature_weighting is not None and lower_surface_curvature_weighting != 0.0 and sflips > 1:
             conpen += lower_surface_curvature_weighting * (sflips-1)
             cons.append(sflips-1)
@@ -817,7 +960,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
         if target_alpha is not None and CL_target_weighting is not None and CL_target_weighting != 0.0:
             if max(alpha_rough)<target_alpha:
                 #  Higher alphas did not converge
-                return [pid, np.inf, np.inf, False, -60] + [0]*N_reported + [0]*N_constraints
+                return [pid, np.inf, np.inf, False, -60] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
             cl_at_target_degrees_rough = np.interp(target_alpha, 
                                                np.array(alpha_rough)[0:positive_peak_index_rough], 
@@ -943,30 +1086,16 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # ----------------------
         # Constrain the locations of the min radius of curvature
         # ----------------------
-        delta_zeta_upper = afl_geo.zetaUpper[1:] - afl_geo.zetaUpper[0:-1]
-        delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
-        first_derivative_approx = (delta_zeta_upper / delta_psi)
-        first_derivative_average = (first_derivative_approx[1:] + first_derivative_approx[0:-1]) / 2.0
-        # analytic second derivative (grid-independent; see upper-surface note above)
-        second_derivative_approx = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'upper'))
-        radius_of_curvature_approx =  (1+first_derivative_average**2)**1.5 / abs(second_derivative_approx)
-        chopped_roc = radius_of_curvature_approx[afl_geo.psi[1:-1] <= min_radius_location_cutoff]
-        computed_min_radius_loc_upper = afl_geo.psi[1:-1][afl_geo.psi[1:-1] <= min_radius_location_cutoff][np.argmin(chopped_roc)]
+        # Sub-grid parabolic-vertex locator (analytic d1/d2) -- reconciled to match the
+        # gradient solver exactly; see _min_radius_location. (was discrete np.argmin)
+        computed_min_radius_loc_upper = _min_radius_location(afl_geo, 'upper', min_radius_location_cutoff)
         if min_radius_location_upper_weighting is not None and min_radius_location_upper_weighting != 0.0 and computed_min_radius_loc_upper > min_radius_location_upper:
             conpen += min_radius_location_upper_weighting * (computed_min_radius_loc_upper - min_radius_location_upper)
             cons.append(computed_min_radius_loc_upper - min_radius_location_upper)
         else:
             cons.append(0.0)
 
-        delta_zeta_lower = afl_geo.zetaLower[1:] - afl_geo.zetaLower[0:-1]
-        delta_psi = afl_geo.psi[1:] - afl_geo.psi[0:-1]
-        first_derivative_approx = (delta_zeta_lower / delta_psi)
-        first_derivative_average = (first_derivative_approx[1:] + first_derivative_approx[0:-1]) / 2.0
-        # analytic second derivative (grid-independent; see upper-surface note above)
-        second_derivative_approx = np.asarray(afl_geo.d2zeta_dpsi2(afl_geo.psi[1:-1], 'lower'))
-        radius_of_curvature_approx =  (1+first_derivative_average**2)**1.5 / abs(second_derivative_approx)
-        chopped_roc = radius_of_curvature_approx[afl_geo.psi[1:-1] <= min_radius_location_cutoff]
-        computed_min_radius_loc_lower = afl_geo.psi[1:-1][afl_geo.psi[1:-1] <= min_radius_location_cutoff][np.argmin(chopped_roc)]
+        computed_min_radius_loc_lower = _min_radius_location(afl_geo, 'lower', min_radius_location_cutoff)
         if min_radius_location_lower_weighting is not None and min_radius_location_lower_weighting != 0.0 and computed_min_radius_loc_lower > min_radius_location_lower:
             conpen += min_radius_location_lower_weighting * (computed_min_radius_loc_lower - min_radius_location_lower)
             cons.append(computed_min_radius_loc_lower - min_radius_location_lower)
@@ -988,9 +1117,65 @@ def core_fitness_function(x, solver=None, kulfan=None):
             cons.append(0.0)
 
         # ----------------------
+        # Curvature-acceleration envelope: |d2kappa/ds2(x)| <= frozen E(x/c) for every
+        # station x>=XSTART, both surfaces (curvature_envelope.json, V13-GA-derived).
+        # Togglable via curvature_accel_weighting (None/0 = off). When on, the max-station
+        # excess is a HARD con_tag constraint (participates in the constrained/Deb sort via
+        # cons + viol) AND is added to conpen (soft) like the other aero guards. (2026-07-30)
+        # ----------------------
+        curvature_accel_weighting = x['params'].get('curvature_accel_weighting', None)
+        if curvature_accel_weighting is not None and curvature_accel_weighting != 0.0:
+            from oso_airfoils.optimization import curvature_envelope as _cenv
+            ca_viol = _cenv.curvature_accel_violation(K_upper, K_lower, te_gap, tau)
+            conpen += curvature_accel_weighting * ca_viol
+            cons.append(ca_viol)
+        else:
+            cons.append(0.0)
+
+        # ----------------------
+        # Lower-surface secondary-bulge guard: lower-surface curvature may not climb back
+        # into a rising mid-chord hump aft of the 2% shoulder (|kappa(x_band)| <= |kappa(2%)|
+        # + margin). Relative -> thickness-agnostic; slack unless the section is bulging.
+        # Togglable via bulge_weighting (None/0 = off). Shares the exact reference/band/margin
+        # with the gradient solver's bulge_terms. Hard con + soft penalty. (2026-08-01)
+        # ----------------------
+        bulge_weighting = x['params'].get('bulge_weighting', None)
+        if bulge_weighting is not None and bulge_weighting != 0.0:
+            from oso_airfoils.optimization import curvature_envelope as _cenv
+            bulge_margin = x['params'].get('bulge_margin', _cenv.BULGE_MARGIN)
+            bg_viol = _cenv.bulge_violation(K_lower, te_gap, margin=bulge_margin)
+            conpen += bulge_weighting * bg_viol
+            cons.append(bg_viol)
+        else:
+            cons.append(0.0)
+
+        # ----------------------
         # return
         # ----------------------
-        con_tag = all([c==0 for c in cons])
+        # Feasibility tolerance reconciled with the gradient's Ipopt solver, which stops at
+        # constr_viol_tol=1e-3 -- so its optimal fronts sit ~1e-3 on the infeasible side of
+        # every ACTIVE bound. The GA's original all(c==0) demanded EXACT zero, which rejected
+        # ~90% of the gradient's own feasible airfoils (e.g. con_max_tau_l at -1.3e-3, 34/50).
+        # Matching the 1e-3 tolerance makes con_tag agree with Ipopt's feasibility. Integer
+        # count constraints (lower_flips, con_tau) are 0 or >=1, so the tolerance is inert for
+        # them. (2026-07-29)
+        _con_tol = x['params'].get('con_tag_tol', 1.0e-3)
+        # rough_xtr_cap is a hard constraint in the gradient (pareto_gold.CONSTRAINTS), so
+        # fold it into GA feasibility too (with the same Ipopt-matched tolerance) whenever
+        # the cap is enabled. cap_viol is 0 when the cap is off, so this is inert then.
+        _cap_tol = x['params'].get('cap_tol', 1.0e-3)
+        # aero_viol gates con_tag when aero_constraints_hard is set (0 otherwise -> inert):
+        # promotes delta_cl/lod_falloff/lod_falloff_2/slope_ratio/transition_slope from soft
+        # penalties to hard feasibility, matching the gradient. Now the feasible search /
+        # con_tag filter actually EXCLUDES their violators instead of just penalizing them.
+        _aero_tol = x['params'].get('aero_tol', 1.0e-3)
+        con_tag = all([c <= _con_tol for c in cons]) and (cap_viol <= _cap_tol) and (aero_viol <= _aero_tol)
+
+        # Total constraint violation for the Deb constraint-domination sort: the
+        # sum of the (already non-negative) geometric `cons` plus any aero
+        # violation promoted into the feasibility set. 0 == feasible. The baseline
+        # 'penalty' sort ignores this column; it costs nothing when unused.
+        viol = float(sum(max(0.0, float(c)) for c in cons)) + hard_viol
 
         # Add penalty for violating the con tag
         # Helps at the end of the run
@@ -1019,7 +1204,7 @@ def core_fitness_function(x, solver=None, kulfan=None):
                 Izz,
                 A,
                 min([cpmin_swept_clean_design, cpmin_swept_rough_design]),
-            ] + cons 
+            ] + cons + [viol]
 
         for rix, rtv in enumerate(r_list):
             if isinstance(rtv, units.Quantity):
@@ -1033,11 +1218,13 @@ def core_fitness_function(x, solver=None, kulfan=None):
         # (the ones written to the JSON) is NaN — a non-converged sweep point on
         # its own is fine and was already filtered out above.
         if any(np.isnan(rtv) for rtv in r_list if isinstance(rtv, (float, np.floating))):
-            return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
+            return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
         return r_list
     except:
-        return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints
+        if _AERO_DEBUG:
+            import traceback; traceback.print_exc()
+        return [pid, np.inf, np.inf, False, -90] + [0]*N_reported + [0]*N_constraints + [_REJECT_VIOL]
 
 
 
@@ -1112,6 +1299,9 @@ if __name__ == '__main__':
         'con_min_rad_loc_upper',
         'con_min_rad_loc_lower',
         'con_toothpick',
+        'con_curvature_accel',
+        'con_bulge',
+        'viol',
     ]
 
     # params = yaml.safe_load(open("example_hydro.yaml"))
